@@ -1,1 +1,1 @@
-AI explained simplely for everyone.
+AI explained simply for everyone.
