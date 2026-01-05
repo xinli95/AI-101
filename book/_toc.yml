@@ -10,11 +10,18 @@ parts:
     restart_numbering: false # Default value (line can be removed), whether to restart numbering for this part, configuration part of TeachBooks' version of sphinx-external-toc (https://github.com/TeachBooks/sphinx-external-toc?tab=readme-ov-file#toc-tree-options)
     chapters:
       - file: transformers/overview.md
-        sections:
-          # - file: some_content/text_and_code.ipynb
+      - file: transformers/tokenizer.md
+      - file: transformers/embedding.md
+      - file: transformers/attention.md
+      - file: transformers/normalization.md
+      - file: transformers/feed_forward.md
+      - file: transformers/positional_embedding.md
+      - file: transformers/summary.md
   - caption: Post-training
     chapters:
-      - file: post_training.md
+      - file: post_training/sft.md
+      - file: post_training/rlhf.md
+      - file: post_training/distillation.md
   - caption: Miscellaneous
     chapters:
       - file: references.md
