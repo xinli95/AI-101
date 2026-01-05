@@ -15,9 +15,8 @@ parts:
   - caption: Post-training
     chapters:
       - file: post_training.md
-  - caption: Inference
   - caption: Miscellaneous
     chapters:
-      # - file: references.md
-    # - file: changelog.md
-    # - file: credits.md
+      - file: references.md
+      - file: changelog.md
+      - file: credits.md
