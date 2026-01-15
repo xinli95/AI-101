@@ -297,5 +297,3 @@ L^{\text{CLIP}}(\theta)
 $$
 
 That is PPO’s core idea: keep the benefits of a policy-gradient update while preventing overly large policy changes.
-
----

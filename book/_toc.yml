@@ -25,6 +25,9 @@ parts:
         sections:
           - file: post_training/ppo.md
           - file: post_training/ppo_advantage.md
+      - file: post_training/rlvr.md
+        sections:
+          - file: post_training/grpo.md
       - file: post_training/distillation.md
   - caption: Agents
     chapters:
