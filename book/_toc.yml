@@ -29,6 +29,10 @@ parts:
         sections:
           - file: post_training/grpo.md
       - file: post_training/distillation.md
+  - caption: Evaluation
+    chapters:
+      - file: evaluation/overview.md
+      - file: evaluation/openjudge.md
   - caption: Agents
     chapters:
       - file: agents/handson/smolagents_MultiStepAgent.md
