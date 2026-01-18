@@ -33,6 +33,13 @@ parts:
     chapters:
       - file: evaluation/overview.md
       - file: evaluation/openjudge.md
+      - file: evaluation/olmo3_overview.md
+        sections:
+          - file: evaluation/olmo3/olmo3_pretraining.md
+          - file: evaluation/olmo3/olmo3_midtraining.md
+          - file: evaluation/olmo3/olmo3_longcontext.md
+          - file: evaluation/olmo3/olmo3_instruct.md
+          - file: evaluation/olmo3/olmo3_thinking.md
   - caption: Agents
     chapters:
       - file: agents/handson/smolagents_MultiStepAgent.md
