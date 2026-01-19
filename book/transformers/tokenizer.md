@@ -239,5 +239,3 @@ These components directly correspond to the toy implementation:
 - Merge loop → Rust-optimized BPE
 
 - Greedy application → deterministic encoding
-
----

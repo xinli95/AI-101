@@ -34,6 +34,7 @@ parts:
       - file: evaluation/overview.md
       - file: evaluation/openjudge.md
       - file: evaluation/metrics.md
+      - file: evaluation/annotation_agreement.md
       - file: evaluation/olmo3_overview.md
         sections:
           - file: evaluation/olmo3/olmo3_pretraining.md
