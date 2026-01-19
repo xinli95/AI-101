@@ -29,6 +29,9 @@ parts:
         sections:
           - file: post_training/grpo.md
       - file: post_training/distillation.md
+      - file: post_training/trl/trl_overview.md
+        sections:
+          - file: post_training/trl/trl_grpo_agent.md
   - caption: Evaluation
     chapters:
       - file: evaluation/overview.md
