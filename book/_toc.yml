@@ -32,6 +32,7 @@ parts:
       - file: post_training/trl/trl_overview.md
         sections:
           - file: post_training/trl/trl_grpo_agent.md
+          - file: post_training/trl/trl_grpo_multitask_rewards.md
   - caption: Evaluation
     chapters:
       - file: evaluation/overview.md
