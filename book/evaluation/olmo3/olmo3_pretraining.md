@@ -23,12 +23,12 @@ OLMo 3’s base-model development uses **OlmoBaseEval**, a benchmark suite inten
 
 Rather than tracking dozens of benchmarks independently, OlmoBaseEval groups tasks into **clusters** and aggregates scores within each cluster. The final clusters are:
 
-- **MC STEM**
-- **MC Non-STEM**
-- **GenQA**
-- **Math**
-- **Code**
-- **Code Fill-in-the-Middle (FIM)**
+- **[MC STEM](olmes/olmo3_base_stem_qa_mc.md)**
+- **[MC Non-STEM](olmes/olmo3_base_nonstem_qa_mc.md)**
+- **[GenQA](olmes/olmo3_base_gen.md)**
+- **[Math](olmes/olmo3_base_math.md)**
+- **[Code](olmes/olmo3_base_code.md)**
+- **[Code Fill-in-the-Middle (FIM)](olmes/olmo3_base_code_fim.md)**
 
 This clustering is motivated by the idea that if tasks behave similarly (e.g., they rank models similarly), you can treat them as a single capability signal.
 
@@ -54,11 +54,11 @@ Two explicit principles:
 - A source is considered for **pretraining** only if it can yield enough tokens to impact capabilities at pretraining scale.
 - **Structured “task data”** (QA pairs, chat templates, instruction traces) is _not_ used in pretraining; it is reserved for later stages (midtraining / long-context). This avoids confounding data ablations because small amounts of structured data can disproportionately move evaluation scores.
 
-They also apply **topic and quality classification** before mixing. Using their WebOrganizer tool (Wettig et al., 2025), they partition the deduplicated corpus into **24 topics** (for example, Adult Content, Politics, and Science and Technology). To speed up processing for the Dolma 3 pool, they distill the transformer-based models from Wettig et al. (2025) into a simpler **fastText** model and partition by **topic only** (not format). In parallel, they train a **fastText-based quality classifier** to assign each document a quality score. Following DCLM (Li et al., 2024a), they use **OpenHermes-2.5** (Teknium, 2023) and **ELI5** (Fan et al., 2019) as positive examples, plus **UltraChat-200k** (Ding et al., 2023) and **WildChat-1M** (Zhao et al., 2024a), while negative examples are **30GB sampled from DCLM-RefinedWeb**.
+They also apply **topic and quality classification** before mixing. Using their **[WebOrganizer](https://huggingface.co/WebOrganizer/TopicClassifier)** tool, they partition the deduplicated corpus into **24 topics** (for example, Adult Content, Politics, and Science and Technology). The topic taxonomy is defined in **[formats.yaml](https://github.com/CodeCreator/WebOrganizer/blob/main/define_domains/taxonomies/formats.yaml)**. To speed up processing for the Dolma 3 pool, they distill the transformer-based models from **WebOrganizer** into a simpler **fastText** model and partition by **topic only** (not format). In parallel, they train a **fastText-based quality classifier** to assign each document a quality score. Following **[DCLM](https://arxiv.org/abs/2406.11794)**, they use **[OpenHermes-2.5](https://huggingface.co/datasets/teknium/OpenHermes-2.5)** and **[ELI5](https://huggingface.co/datasets/sentence-transformers/eli5)** as positive examples, plus **[UltraChat-200k](https://huggingface.co/datasets/HuggingFaceH4/ultrachat_200k)** and **[WildChat-1M](https://huggingface.co/datasets/allenai/WildChat-1M)**, while negative examples are **30GB sampled from DCLM-RefinedWeb**.
 
 ## The pretraining corpus: Dolma 3 Mix (≈6T tokens)
 
-OLMo 3 pretraining uses **Dolma 3 Mix**, a ~6T-token mixture sampled from a larger cleaned pool (~9T tokens). The report provides the following composition (Table 4):
+OLMo 3 pretraining uses **Dolma 3 Mix**, a ~6T-token mixture sampled from a larger cleaned pool (~9T tokens). The report provides the following composition:
 
 | Source                 | Type               | 9T pool tokens | 6T mix tokens (share) |
 | ---------------------- | ------------------ | -------------: | --------------------: |
@@ -111,7 +111,7 @@ Before mixing and upsampling, OLMo 3 first **labels each document** with:
 - a **topic label** (one of 24 topics), and
 - a **quality score** (used later for quality-aware upsampling).
 
-This is done with their **WebOrganizer** toolchain (Wettig et al., 2025), but they **distill** the original transformer classifiers into a faster model for large-scale processing.
+This is done with their **[WebOrganizer](https://huggingface.co/WebOrganizer/TopicClassifier)** topic classifier, but they **distill** the original transformer classifiers into a faster model for large-scale processing.
 
 ### 1) Topic classification (24 topics)
 
@@ -130,7 +130,7 @@ Conceptually, it is trained like a _binary_ text classifier (high-quality vs low
 
 #### Positive training examples (high-quality)
 
-Following the DCLM approach, they treat the following datasets as _positive_ examples:
+Following the **[DCLM](https://arxiv.org/abs/2406.11794)** approach, they treat the following datasets as _positive_ examples:
 
 - **[OpenHermes-2.5](https://huggingface.co/datasets/teknium/OpenHermes-2.5)**
 - **[ELI5](https://huggingface.co/datasets/sentence-transformers/eli5)**

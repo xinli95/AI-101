@@ -8,6 +8,7 @@ This tutorial focuses **only** on metrics commonly used in **OLMES-style LLM eva
 - **ROUGE-1 / ROUGE-2 / ROUGE-L**
 - **MC1 / MC2** (TruthfulQA-style multiple choice)
 - **pass@k** (code generation)
+- **Ranking metrics** (NDCG@k, MRR, Recall@k, MAP, win-rate)
 
 ---
 
@@ -368,7 +369,113 @@ $$
 
 ---
 
-## 7. Summary cheat sheet
+## 7. Ranking / search metrics
+
+Ranking metrics are used when the model outputs a **ranked list** of items (documents, answers, candidates).
+
+### 7.1 NDCG@k (Normalized Discounted Cumulative Gain)
+
+Given a ranked list with relevance labels $rel_i$ (e.g., graded relevance 0–3, where higher means more relevant), DCG@k is:
+
+$$
+DCG@k = \sum_{i=1}^{k} \frac{2^{rel_i}-1}{\log_2(i+1)}
+$$
+
+NDCG@k normalizes by the ideal ranking:
+
+$$
+NDCG@k = \frac{DCG@k}{IDCG@k}
+$$
+
+IDCG@k is computed by sorting the same relevance labels in **descending** order (best possible ranking) and applying the DCG formula to the top $k$.
+
+**Worked example (DCG)**
+
+Suppose $k=3$ and the relevance labels for the top 3 results are:
+
+- $rel_1 = 3$
+- $rel_2 = 2$
+- $rel_3 = 0$
+
+Then:
+
+$$
+DCG@3 = \frac{2^3 - 1}{\log_2(2)} + \frac{2^2 - 1}{\log_2(3)} + \frac{2^0 - 1}{\log_2(4)}
+      = \frac{7}{1} + \frac{3}{1.585} + \frac{0}{2}
+      \approx 7 + 1.893 + 0 = 8.893
+$$
+
+If the ideal ordering is already sorted by relevance, then $IDCG@3 = DCG@3$ and $NDCG@3 = 1.0$.
+
+### 7.2 MRR (Mean Reciprocal Rank)
+
+Reciprocal rank for one query is $1 / rank$ of the first relevant item. MRR averages across queries:
+
+$$
+MRR = \frac{1}{Q} \sum_{q=1}^{Q} \frac{1}{rank_q}
+$$
+
+### 7.3 Recall@k
+
+Fraction of relevant items retrieved in top $k$:
+
+$$
+Recall@k = \frac{|\,\text{relevant} \cap \text{top-}k\,|}{|\,\text{relevant}\,|}
+$$
+
+### 7.4 MAP (Mean Average Precision)
+
+Average precision for one query is the mean of precision at ranks where a relevant item appears:
+
+$$
+P@i = \frac{\#\text{relevant items in top } i}{i}
+$$
+
+$$
+AP = \frac{1}{|\text{relevant}|} \sum_{i=1}^{n} P@i \cdot \mathbb{1}[i \text{ is relevant}]
+$$
+
+MAP averages AP across queries.
+
+**Worked example (single query)**
+
+Suppose the ranked list relevance is:
+
+- `[1, 0, 1, 0, 1]`
+
+Precision at relevant ranks:
+
+- $P@1 = 1/1 = 1.0$
+- $P@3 = 2/3 \approx 0.667$
+- $P@5 = 3/5 = 0.6$
+
+Total relevant items $R = 3$.
+
+$$
+AP = \frac{1}{3}(1.0 + 0.667 + 0.6) \approx 0.756
+$$
+
+**Multiple queries (MAP)**
+
+If you have $Q$ queries, compute $AP_q$ for each one and average:
+
+$$
+MAP = \frac{1}{Q} \sum_{q=1}^{Q} AP_q
+$$
+
+### 7.5 Win-rate (pairwise preference)
+
+For pairwise human judgments, win-rate is:
+
+$$
+\text{win-rate} = \frac{\#\text{wins}}{\#\text{wins} + \#\text{losses}}
+$$
+
+This is common for head-to-head model comparisons or preference-based evals.
+
+---
+
+## 8. Summary cheat sheet
 
 | Metric           | Typical use case           | Output range | Better | What it measures                      |
 | ---------------- | -------------------------- | -----------: | -----: | ------------------------------------- |
@@ -379,3 +486,8 @@ $$
 | MC1              | multi-choice               |          0/1 |      ↑ | top-1 chooses a true answer           |
 | MC2              | multi-choice               |         0..1 |      ↑ | probability mass on true answers      |
 | pass@k           | code generation            |         0..1 |      ↑ | chance of ≥1 passing among k attempts |
+| NDCG@k           | ranking / search           |         0..1 |      ↑ | discounted gain vs ideal              |
+| MRR              | ranking / search           |         0..1 |      ↑ | rank of first relevant item           |
+| Recall@k         | ranking / search           |         0..1 |      ↑ | fraction of relevant in top k         |
+| MAP              | ranking / search           |         0..1 |      ↑ | average precision across queries      |
+| win-rate         | pairwise preference        |         0..1 |      ↑ | % wins in head-to-head comparisons    |

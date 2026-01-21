@@ -46,12 +46,20 @@ parts:
           - file: evaluation/olmo3/olmo3_longcontext.md
           - file: evaluation/olmo3/olmo3_instruct.md
           - file: evaluation/olmo3/olmo3_thinking.md
+      - file: evaluation/olmo3/olmo3_evaluation.md
+        sections:
+          - file: evaluation/olmo3/olmes/olmo3_base_stem_qa_mc.md
+          - file: evaluation/olmo3/olmes/olmo3_base_nonstem_qa_mc.md
+          - file: evaluation/olmo3/olmes/olmo3_base_gen.md
+          - file: evaluation/olmo3/olmes/olmo3_base_math.md
+          - file: evaluation/olmo3/olmes/olmo3_base_code.md
+          - file: evaluation/olmo3/olmes/olmo3_base_code_fim.md
   - caption: Agents
     chapters:
       - file: agents/handson/smolagents_MultiStepAgent.md
   - caption: Responsible AI
     chapters:
-      - file: safety/anthropic.md
+      - file: responsible_ai/anthropic.md
   - caption: Vision
     chapters:
       - file: vision/diffusion.md
