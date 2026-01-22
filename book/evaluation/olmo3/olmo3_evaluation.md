@@ -1,8 +1,8 @@
-# OLMo 3 Evaluation (OlmoBaseEval)
+# OLMo 3 Evaluation Task Clusters
 
-This section collects the OLMo 3 evaluation task clusters used in OlmoBaseEval. Each page documents the benchmark cluster and its role in tracking base-model progress.
+This section lists the evaluation task clusters for OLMo 3 base models and post-trained Think/Instruct models.
 
-Task clusters:
+OlmoBaseEval task clusters (base model pretraining):
 
 - MC STEM
 - MC Non-STEM
@@ -10,3 +10,11 @@ Task clusters:
 - Math
 - Code
 - Code Fill-in-the-Middle (FIM)
+
+Think/Instruct task clusters (olmo3:adapt):
+
+- Knowledge
+- Reasoning
+- Math
+- Coding
+- Chat / Instruction Following

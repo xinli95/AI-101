@@ -54,6 +54,7 @@ parts:
           - file: evaluation/olmo3/olmes/olmo3_base_math.md
           - file: evaluation/olmo3/olmes/olmo3_base_code.md
           - file: evaluation/olmo3/olmes/olmo3_base_code_fim.md
+          - file: evaluation/olmo3/olmes/olmo3_adapt.md
   - caption: Agents
     chapters:
       - file: agents/handson/smolagents_MultiStepAgent.md
