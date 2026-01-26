@@ -60,6 +60,10 @@ parts:
       - file: agents/handson/smolagents_MultiStepAgent.md
   - caption: Responsible AI
     chapters:
+      - file: responsible_ai/overview.md
+      - file: responsible_ai/openai_evaluation_hub.md
+      - file: responsible_ai/openai_moderation.md
+      - file: responsible_ai/gpt-oss-safeguard.md
       - file: responsible_ai/anthropic.md
   - caption: Vision
     chapters:
