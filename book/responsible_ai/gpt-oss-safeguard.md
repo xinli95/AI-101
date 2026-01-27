@@ -6,7 +6,7 @@ This tutorial summarizes **GPT‑OSS‑Safeguard** and related ideas such as **d
 
 ## 1. What is GPT‑OSS‑Safeguard?
 
-**GPT‑OSS‑Safeguard** is an **open‑weight safety classifier model** designed for **automated content classification** in responsible AI / Trust & Safety pipelines.
+**GPT‑OSS‑Safeguard** is an **open‑weight safety reasoning LLM** designed for **automated content classification** in responsible AI / Trust & Safety pipelines.
 
 At inference time, the model is given a **policy prompt** (your rules/specification), plus the content to judge (a user message, an assistant response, or a multi‑turn conversation). It then outputs a structured classification decision.
 
@@ -145,86 +145,49 @@ You should think of it as **labeling guidelines for expert annotators**, but wri
 
 ## 5. How to build a good policy prompt
 
-A strong policy prompt typically contains:
+### 5.1 Structuring policy prompts
 
-1. **Purpose / scope**
-2. **Decision labels** (allow/block/escalate)
-3. **Category definitions**
-4. **Edge cases / exceptions**
-5. **Uncertainty handling**
-6. **Output format contract** (strict JSON)
+Well-formed policy prompts use a clear, repeatable layout with four sections:
 
-### 5.1 Suggested structure (template)
+- **Instruction**: the required task and how the model should answer.
+- **Definitions**: short, precise meanings for key terms.
+- **Criteria**: what counts as a violation vs non-violation.
+- **Examples**: brief boundary cases, including both positive and negative labels.
+
+Because oss-safeguard is tuned for structured moderation, it performs best with explicit response guidance. Prompts that follow a consistent format (including the expected output) are easier to follow. The harmony format's structured channels let the model reason across sections and then emit only the final label:
 
 ```text
-You are a content safety classifier. Classify content according to this policy.
-
-## Labels
-- allow: safe content, no policy violation
-- block: disallowed content
-- escalate: unclear, borderline, or missing context
-
-## Disallowed Categories (block)
-1) Self-harm instructions
-2) Violence instructions
-3) Hate/harassment targeting protected groups
-4) Sexual content involving minors
-5) Illicit wrongdoing instructions
-
-## Allowed Categories (allow)
-- general discussion, prevention, recovery
-- news reporting, academic analysis
-- non-graphic fictional descriptions
-
-## Ambiguity Rules (escalate)
-Escalate when:
-- user intent is unclear
-- content is high risk without context
-- conversation is missing key details
-
-## Output format
-Return ONLY JSON with:
-{ "decision": ..., "categories": [...], "reason": "...", "policy_section": "..." }
+# Policy Name
+ 
+## INSTRUCTIONS
+ 
+State the task and the required response style.
+ 
+## DEFINITIONS
+ 
+Define key terms and any needed context.
+ 
+## VIOLATES (1)
+ 
+List behaviors or content that should be flagged.
+ 
+## SAFE (0)
+ 
+List content that should not be flagged.
+ 
+## EXAMPLES
+ 
+Provide 4-6 short examples labeled 0 or 1.
+ 
+Content: [INPUT]
+Answer (0 or 1):
 ```
+
+To reduce false positives or confusion, avoid soft qualifiers like "generally" or "usually". If ambiguity is expected, add an escalation path for manual review. This is especially helpful for regional or language differences.
 
 ## 6. Choosing the right policy length
 
-Policy length is a tuning knob between **efficiency** and **coverage**.
-
-### 6.1 Short policy
-
-Use when:
-
-- You only need a simple allow/block decision
-- Categories are few
-- Latency is critical
-
-Risk:
-
-- Under‑specification → inconsistent borderline decisions
-
-### 6.2 Medium policy (recommended default)
-
-Use when:
-
-- You need allow/block/escalate
-- You want category tags
-- You want consistent handling of common edge cases
-
-### 6.3 Long policy
-
-Use when:
-
-- You have many categories, complex compliance rules, or formal audit requirements
-
-Risk:
-
-- Higher token cost
-- Potential for overly rigid or overfit behaviors
-
-:::{tip}
-Start with a **medium** policy. Expand only when you identify concrete failure modes.
-:::
+Policy length is a tuning knob between **efficiency** and **coverage**. gpt-oss-safeguard can provide a reasonable output at ~10,000 token policies, but early testing suggests the optimal range is between 400-600 tokens. It’s important to experiment and see what works best for you as there is no one-size-fits-all approach.
 
 ## 7. Output instructions: designing production‑friendly outputs
 

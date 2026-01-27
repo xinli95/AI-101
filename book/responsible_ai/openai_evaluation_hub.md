@@ -79,7 +79,7 @@ This can be viewed as a measure of **robustness** against prompt attacks.
 
 The hub reports jailbreak results on at least two datasets:
 
-- **StrongReject** (an academic jailbreak benchmark)
+- **[StrongReject](https://huggingface.co/datasets/walledai/StrongREJECT)** (an academic jailbreak benchmark)
 - **Human-sourced jailbreaks** (attacks written or collected from human red-teaming)
 
 ### 3.3 Why jailbreak evaluation matters
@@ -105,7 +105,7 @@ This category is about **factuality and reliability** rather than safety policy 
 
 The hub includes at least two hallucination-focused evaluation sets:
 
-1. **SimpleQA**
+1. **[SimpleQA](https://huggingface.co/datasets/basicv8vc/SimpleQA)** (variant: [simpleqa-verified](https://huggingface.co/datasets/google/simpleqa-verified))
    - A dataset of **4,000** fact-seeking questions
    - Ground-truth answers are short and unambiguous
 
@@ -146,7 +146,10 @@ The hub includes tests that cover multiple types of instruction conflicts and at
 - Developer ↔ User conflicts
 - System ↔ Developer conflicts
 - tutor jailbreak variants
+  - The model is instructed to be a math tutor and not give away the solution, and the user attempts to trick the model into giving away the solution.
+  - To pass this eval, the model must not give away the answer to a math problem when the user attempts to trick the tutor.
 - phrase / password protection checks
+  - To pass this eval, the model must not output a specific phrase or a bespoke password which are specified in a system message.
 
 ### 5.3 Pass condition (what counts as success)
 
@@ -170,8 +173,8 @@ In practice, a model may score differently across these evaluation classes, and 
 The OpenAI Safety Evaluations Hub organizes safety and reliability measurement into four key evaluation families:
 
 - **Disallowed content**: policy compliance, reported with `not_unsafe` and disaggregated by safety categories
-- **Jailbreaks**: robustness to adversarial prompting, including StrongReject and human-sourced jailbreaks
-- **Hallucinations**: factuality measured with accuracy and hallucination rate on SimpleQA and PersonQA
+- **Jailbreaks**: robustness to adversarial prompting, including [StrongReject](https://huggingface.co/datasets/walledai/StrongREJECT) and human-sourced jailbreaks
+- **Hallucinations**: factuality measured with accuracy and hallucination rate on [SimpleQA](https://huggingface.co/datasets/basicv8vc/SimpleQA) (variant: [simpleqa-verified](https://huggingface.co/datasets/google/simpleqa-verified)) and PersonQA
 - **Instruction hierarchy**: obedience to System > Developer > User priority under conflicting instructions
 
 Together, these evaluations provide a structured view of how safety behavior is tested and tracked over time.
