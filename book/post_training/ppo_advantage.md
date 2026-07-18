@@ -212,6 +212,7 @@ $$
 So the TD residual is an **unbiased advantage estimator** when the value function is correct.
 
 Note that this is exactly the 1-step advantage estimator:
+
 $$
 \delta_t = \hat A_t^{(1)}.
 $$

@@ -4,17 +4,17 @@ This tutorial builds **Proximal Policy Optimization (PPO)** step by step:
 
 1. Start from the objective: maximize **expected total rewards** as a **weighted average over rollouts**.
 2. Derive the policy gradient using the **log-derivative trick**:
-   $$\nabla_\theta J(\theta)=\mathbb{E}[\nabla_\theta \log p_\theta(\tau)\,R(\tau)].$$
+   $\nabla_\theta J(\theta)=\mathbb{E}[\nabla_\theta \log p_\theta(\tau)\,R(\tau)].$
 3. Expand $\log p_\theta(\tau)$ into a sum of $\log \pi_\theta(a_t\mid s_t)$.
 4. Derive PPO’s surrogate objective using the **probability ratio**
-   $$r_t(\theta)=\frac{\pi_\theta(a_t\mid s_t)}{\pi_{\theta_{\text{old}}}(a_t\mid s_t)},$$
+   $r_t(\theta)=\frac{\pi_\theta(a_t\mid s_t)}{\pi_{\theta_{\text{old}}}(a_t\mid s_t)},$
    and then the **clipped** PPO objective.
 
 ---
 
 ## 1. Objective as a Weighted Average Over Rollouts
 
-Consider a stochastic policy $$\pi_\theta(a\mid s)$$. A rollout (trajectory) is
+Consider a stochastic policy $\pi_\theta(a\mid s)$. A rollout (trajectory) is
 
 $$
 \tau = (s_0,a_0,s_1,a_1,\dots,s_T).
@@ -114,7 +114,7 @@ $$
 
 ### 3.1 Advantage Form (Better Credit Assignment + Lower Variance)
 
-In practice, we replace the rollout-level return $$R(\tau)$$ with a **time-dependent** signal such as an **advantage**:
+In practice, we replace the rollout-level return $R(\tau)$ with a **time-dependent** signal such as an **advantage**:
 
 $$
 \nabla_\theta J(\theta)
@@ -204,7 +204,7 @@ which matches the importance-sampled form of $\nabla_\theta J(\theta)$ above. So
 
 ## 6. Why PPO Modifies the Surrogate: Too-Big Updates
 
-If you maximize $$\mathbb{E}[r_t(\theta)A_t]$$ directly, the ratio $$r_t(\theta)$$ can become very large or very small. This can cause:
+If you maximize $\mathbb{E}[r_t(\theta)A_t]$ directly, the ratio $r_t(\theta)$ can become very large or very small. This can cause:
 
 - unstable training,
 - destructive updates from noisy advantage estimates,
@@ -264,7 +264,7 @@ $$
 \nabla J(\theta)=\mathbb{E}_{\tau\sim p_\theta}[\nabla\log p_\theta(\tau)\,R(\tau)].
 $$
 
-### Step 3: Expand $$\log p_\theta(\tau)$$ (environment terms vanish)
+### Step 3: Expand $\log p_\theta(\tau)$ (environment terms vanish)
 
 $$
 \nabla\log p_\theta(\tau)=\sum_t \nabla\log \pi_\theta(a_t\mid s_t).

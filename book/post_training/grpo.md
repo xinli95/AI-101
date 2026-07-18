@@ -291,9 +291,11 @@ Below are **conceptual pseudocode sketches** (not framework-specific) to clarify
 **Advantage computation**
 
 - Compute group mean (and optionally std):
+
   $$
   \hat A_i = \frac{R_i - \mu_R}{\sigma_R + \delta}
   $$
+
 - Broadcast to tokens: $\hat A_{i,t} = \hat A_i$
 
 **Optimization**
@@ -312,6 +314,7 @@ Same as vanilla GRPO, except:
   - Normalize loss by a fixed constant (e.g. `MAX_TOKENS`) instead of $|o_i|$
 - **Advantage normalization**
   - Use mean-centering only:
+
     $$
     \hat A_i = R_i - \mu_R
     $$
@@ -325,6 +328,7 @@ This removes incentives to exploit length and stabilizes scaling.
 **Data collection**
 
 - Same as GRPO, but store **full sequence log-likelihood**:
+
   $$
   \log \pi_{\theta_{\text{old}}}(o_i \mid q)
   $$
@@ -336,6 +340,7 @@ This removes incentives to exploit length and stabilizes scaling.
 **Optimization**
 
 - Compute **sequence-level ratio**:
+
   $$
   r_i^{\text{seq}}(\theta)
   =
@@ -343,7 +348,9 @@ This removes incentives to exploit length and stabilizes scaling.
   \log \pi_\theta(o_i \mid q) - \log \pi_{\theta_{\text{old}}}(o_i \mid q)
   \right)
   $$
+
 - Apply **sequence-level clipping**:
+
   $$
   \min\big(
   r_i^{\text{seq}} \hat A_i,\;
