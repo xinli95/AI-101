@@ -4,4 +4,7 @@ The TRL section collects practical, implementation-focused examples for post-tra
 
 In this subsection you will find:
 
-- **Agentic RL with GRPO** using TRL as an end-to-end example.
+- **PPO trainer deep dive** — how `PPOTrainer`'s actor-critic loop implements GAE (including the backward recursion), the KL-penalized reward, and clipped policy/value losses.
+- **Standard RL with GRPO** — a practical walkthrough of `GRPOTrainer` for the single-turn (non-agentic) setting: config, reward functions, and rollout/update mechanics.
+- **Multi-task reward training with GRPO** — mixing multiple tasks and reward functions in one run.
+- **Agentic RL with GRPO** using TRL as an end-to-end example, with tool-calling, multi-turn rollouts, and reward design for agent behavior.
