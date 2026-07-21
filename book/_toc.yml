@@ -28,6 +28,7 @@ parts:
       - file: post_training/rlvr.md
         sections:
           - file: post_training/grpo.md
+          - file: post_training/agentic_rl.md
       - file: post_training/distillation.md
       - file: post_training/trl/trl_overview.md
         sections:
