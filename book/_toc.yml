@@ -25,6 +25,7 @@ parts:
         sections:
           - file: post_training/ppo.md
           - file: post_training/ppo_advantage.md
+          - file: post_training/dpo.md
       - file: post_training/rlvr.md
         sections:
           - file: post_training/grpo.md
@@ -33,6 +34,7 @@ parts:
       - file: post_training/trl/trl_overview.md
         sections:
           - file: post_training/trl/trl_ppo_trainer.md
+          - file: post_training/trl/trl_dpo_trainer.md
           - file: post_training/trl/trl_grpo_trainer.md
           - file: post_training/trl/trl_grpo_multitask_rewards.md
           - file: post_training/trl/trl_grpo_agent.md
