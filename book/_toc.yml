@@ -61,9 +61,6 @@ parts:
           - file: evaluation/olmo3/olmes/olmo3_base_code.md
           - file: evaluation/olmo3/olmes/olmo3_base_code_fim.md
           - file: evaluation/olmo3/olmes/olmo3_adapt.md
-  - caption: Agents
-    chapters:
-      - file: agents/handson/smolagents_MultiStepAgent.md
   - caption: Responsible AI
     chapters:
       - file: responsible_ai/overview.md
@@ -71,9 +68,6 @@ parts:
       - file: responsible_ai/openai_moderation.md
       - file: responsible_ai/gpt-oss-safeguard.md
       - file: responsible_ai/anthropic.md
-  - caption: Vision
-    chapters:
-      - file: vision/diffusion.md
   - caption: Miscellaneous
     chapters:
       - file: references.md
