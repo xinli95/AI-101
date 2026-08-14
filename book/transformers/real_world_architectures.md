@@ -1,4 +1,4 @@
-# Implementing Real Transformer Architectures: Llama 3 and Gemma 4
+# Transformer Anatomy: Llama 3 and Gemma 4
 
 The earlier sections explained the individual parts of a Transformer.
 This section answers two more practical questions:
@@ -403,7 +403,7 @@ It will not produce useful text until you load trained weights.
 
 ---
 
-## What Does Hugging Face Need to Load a Model?
+## Loading a Model
 
 When you write:
 
@@ -900,6 +900,614 @@ That is the main practical difference from a text-only Llama checkpoint.
 
 ---
 
+## Hugging Face Anatomy
+
+Hugging Face does not treat a model as one giant Python file.
+A model family is a small package under:
+
+```text
+src/transformers/models/<model_name>/
+```
+
+The package separates five concerns:
+
+```text
+configuration: what shapes and architectural choices exist?
+modeling: how tensors flow through PyTorch modules?
+tokenization / processing: how raw user inputs become tensors?
+auto registration: how AutoConfig / AutoModel discover the classes?
+task heads: which task-specific wrappers sit on top of the base model?
+```
+
+This separation is the main design principle. The same base architecture can support many tasks, many loading paths, and many input modalities.
+
+### Llama Directory: A Minimal Text-Only Package
+
+In `transformers` v5.14.0, the Llama package contains:
+
+```text
+models/llama/
+  __init__.py
+  configuration_llama.py
+  modeling_llama.py
+  tokenization_llama.py
+```
+
+Each file has a clear job:
+
+| File | Main responsibility |
+|---|---|
+| `configuration_llama.py` | Defines `LlamaConfig`, validates architectural hyperparameters |
+| `modeling_llama.py` | Defines PyTorch modules and task heads |
+| `tokenization_llama.py` | Defines tokenizer wrappers |
+| `__init__.py` | Exposes public classes through lazy imports |
+
+The key classes are:
+
+```text
+LlamaConfig
+LlamaRMSNorm
+LlamaRotaryEmbedding
+LlamaMLP
+LlamaAttention
+LlamaDecoderLayer
+LlamaPreTrainedModel
+LlamaModel
+LlamaForCausalLM
+LlamaForSequenceClassification
+LlamaForQuestionAnswering
+LlamaForTokenClassification
+LlamaTokenizer
+```
+
+The hierarchy is:
+
+```text
+PreTrainedConfig
+  -> LlamaConfig
+
+PreTrainedModel
+  -> LlamaPreTrainedModel
+       -> LlamaModel
+       -> LlamaForCausalLM
+       -> LlamaForSequenceClassification
+       -> LlamaForQuestionAnswering
+       -> LlamaForTokenClassification
+```
+
+The important split is:
+
+```text
+LlamaModel = base decoder stack
+LlamaForCausalLM = LlamaModel + lm_head + generation support
+```
+
+So when you call:
+
+```python
+AutoModel.from_pretrained("meta-llama/Llama-3.2-1B")
+```
+
+you get the base model. When you call:
+
+```python
+AutoModelForCausalLM.from_pretrained("meta-llama/Llama-3.2-1B")
+```
+
+you get the base model plus a language-modeling head.
+
+### What `LlamaConfig` Is Responsible For
+
+`LlamaConfig` is not just a dictionary.
+It is the contract between checkpoint files and Python code.
+
+It defines fields such as:
+
+```text
+model_type = "llama"
+vocab_size
+hidden_size
+intermediate_size
+num_hidden_layers
+num_attention_heads
+num_key_value_heads
+hidden_act
+max_position_embeddings
+rms_norm_eps
+use_cache
+tie_word_embeddings
+rope_parameters
+attention_bias
+attention_dropout
+mlp_bias
+head_dim
+```
+
+It also performs architecture checks, such as ensuring `hidden_size` is divisible by `num_attention_heads`.
+
+The `model_type` string is crucial:
+
+```text
+config.json says "model_type": "llama"
+AutoConfig maps "llama" -> LlamaConfig
+AutoModelForCausalLM maps LlamaConfig -> LlamaForCausalLM
+```
+
+This is how `Auto*` classes avoid hard-coding every model in user code.
+
+### What `LlamaPreTrainedModel` Adds
+
+`LlamaPreTrainedModel` is the model-family base class.
+It inherits from `PreTrainedModel` and stores integration metadata:
+
+```text
+base_model_prefix = "model"
+supports_gradient_checkpointing = True
+_no_split_modules = ["LlamaDecoderLayer"]
+_skip_keys_device_placement = ["past_key_values"]
+_supports_flash_attn = True
+_supports_sdpa = True
+_supports_flex_attn = True
+_supports_attention_backend = True
+```
+
+These fields are not the mathematical architecture.
+They tell the library how to load, shard, compile, checkpoint, and run the model efficiently.
+
+Examples:
+
+| Field | Why it exists |
+|---|---|
+| `base_model_prefix` | tells HF where the base model lives inside a task wrapper |
+| `_no_split_modules` | prevents device mapping from splitting one decoder layer across boundaries |
+| `_skip_keys_device_placement` | avoids moving cache objects as if they were ordinary tensors |
+| `_supports_flash_attn` / `_supports_sdpa` | lets attention dispatch choose optimized kernels |
+
+This is the difference between an educational implementation and a production library implementation.
+
+### What `LlamaModel.forward()` Handles
+
+Our from-scratch model only accepted `input_ids`.
+The HF model must support a much wider API:
+
+```text
+input_ids
+attention_mask
+position_ids
+past_key_values
+inputs_embeds
+use_cache
+extra generation / tracing kwargs
+```
+
+The base model forward pass does roughly:
+
+```text
+validate exactly one of input_ids or inputs_embeds
+embed token IDs if needed
+create or reuse DynamicCache
+create position IDs
+create causal mask
+compute RoPE position embeddings
+run decoder layers
+apply final RMSNorm
+return BaseModelOutputWithPast
+```
+
+This is why HF model code can look more complicated than a teaching implementation.
+Much of the extra code is for masks, cache, output format, device mapping, and generation compatibility.
+
+### What `LlamaForCausalLM` Adds
+
+`LlamaForCausalLM` wraps the base model:
+
+```text
+LlamaForCausalLM
+  model: LlamaModel
+  lm_head: Linear(hidden_size, vocab_size)
+```
+
+Its forward pass does:
+
+```text
+call LlamaModel
+take last hidden states
+compute logits with lm_head
+optionally compute next-token loss if labels are provided
+return CausalLMOutputWithPast
+```
+
+It also inherits `GenerationMixin`, which gives the model `.generate()`.
+
+So the design is:
+
+```text
+base model = representation computation
+task head = logits/loss for a task
+GenerationMixin = autoregressive decoding utilities
+```
+
+---
+
+## Gemma4 Unified
+
+Gemma4 Unified is larger because it must handle text, image, video, and audio.
+In v5.14.0, the package contains:
+
+```text
+models/gemma4_unified/
+  __init__.py
+  configuration_gemma4_unified.py
+  feature_extraction_gemma4_unified.py
+  image_processing_gemma4_unified.py
+  modeling_gemma4_unified.py
+  modular_gemma4_unified.py
+  processing_gemma4_unified.py
+  video_processing_gemma4_unified.py
+```
+
+The extra files are not decorative.
+They exist because multimodal models have more input contracts:
+
+| File | Main responsibility |
+|---|---|
+| `configuration_gemma4_unified.py` | text, vision, audio, and unified config classes |
+| `modeling_gemma4_unified.py` | text decoder, multimodal embedding merge, task heads |
+| `processing_gemma4_unified.py` | combines tokenizer, image processor, video processor, audio feature extractor |
+| `image_processing_gemma4_unified.py` | image resize, patching, padding, position IDs |
+| `video_processing_gemma4_unified.py` | frame/video patch processing |
+| `feature_extraction_gemma4_unified.py` | audio feature extraction |
+| `modular_gemma4_unified.py` | modular source that reuses/adapts existing Gemma and Llama components |
+| `__init__.py` | lazy public exports |
+
+### Nested Configs
+
+Llama has one config:
+
+```text
+LlamaConfig
+```
+
+Gemma4 Unified has several:
+
+```text
+Gemma4UnifiedTextConfig
+Gemma4UnifiedVisionConfig
+Gemma4UnifiedAudioConfig
+Gemma4UnifiedConfig
+```
+
+The top-level config owns the sub-configs:
+
+```text
+Gemma4UnifiedConfig
+  text_config
+  vision_config
+  audio_config
+  image/audio/video special token IDs
+```
+
+This lets the model be partially constructed.
+For example, if `vision_config` is missing, the vision embedder does not need to be initialized.
+
+### Text-Only vs Unified Classes
+
+Gemma4 Unified has both text-only and multimodal model classes:
+
+```text
+Gemma4UnifiedTextModel
+Gemma4UnifiedForCausalLM
+Gemma4UnifiedModel
+Gemma4UnifiedForConditionalGeneration
+```
+
+Their roles are:
+
+| Class | Role |
+|---|---|
+| `Gemma4UnifiedTextModel` | decoder-only text Transformer |
+| `Gemma4UnifiedForCausalLM` | text Transformer plus LM head |
+| `Gemma4UnifiedModel` | multimodal wrapper that merges text/image/video/audio embeddings |
+| `Gemma4UnifiedForConditionalGeneration` | multimodal wrapper plus LM head and generation support |
+
+A useful way to see the composition:
+
+```text
+Gemma4UnifiedForConditionalGeneration
+  model: Gemma4UnifiedModel
+    language_model: AutoModel.from_config(text_config)
+    embed_vision: Gemma4UnifiedVisionEmbedder
+    embed_audio: Gemma4UnifiedMultimodalEmbedder
+  lm_head
+```
+
+The interesting line is:
+
+```text
+language_model = AutoModel.from_config(config.text_config)
+```
+
+That means the unified model delegates the text decoder to the AutoModel system.
+This keeps the multimodal wrapper focused on input fusion instead of duplicating the whole decoder.
+
+### Multimodal Forward Pass
+
+For text-only Llama, `input_ids` are embedded and passed to decoder layers.
+
+For Gemma4 Unified, the forward pass has an extra step:
+
+```text
+embed text token IDs
+find placeholder tokens for image/video/audio
+turn images/videos/audio into soft embeddings
+scatter soft embeddings into the text embedding sequence
+pass the merged sequence into the language model
+compute logits
+```
+
+The sequence still becomes a single stream of embeddings:
+
+```text
+[text token, text token, image placeholder, text token]
+                |
+                replaced with image soft token embedding
+```
+
+So even multimodal generation eventually reduces to:
+
+```text
+merged embeddings -> decoder-only language model -> logits
+```
+
+### Processor Classes Are Part of the Model Contract
+
+For a multimodal checkpoint, `AutoProcessor` is as important as `AutoTokenizer`.
+
+`Gemma4UnifiedProcessor` combines:
+
+```text
+tokenizer
+image processor
+video processor
+audio feature extractor
+chat template logic
+```
+
+It must produce tensors whose names match the model forward signature:
+
+```text
+input_ids
+attention_mask
+pixel_values
+pixel_values_videos
+input_features
+input_features_mask
+image_position_ids
+video_position_ids
+mm_token_type_ids
+```
+
+This is a general HF principle:
+
+```text
+processor output keys should line up with model.forward() argument names
+```
+
+That is why multimodal models need more files than text-only models.
+
+---
+
+## Design Checklist
+
+If you were implementing a new model family in Hugging Face style, the design checklist would look like this.
+
+### 1. Start With the Config
+
+Define a `PreTrainedConfig` subclass:
+
+```python
+class MyModelConfig(PreTrainedConfig):
+    model_type = "my_model"
+
+    vocab_size: int = 32000
+    hidden_size: int = 4096
+    num_hidden_layers: int = 32
+    num_attention_heads: int = 32
+```
+
+The config should contain every architecture choice needed to instantiate empty modules.
+It should not contain learned tensors.
+
+For multimodal models, define sub-configs:
+
+```text
+MyModelTextConfig
+MyModelVisionConfig
+MyModelAudioConfig
+MyModelConfig
+```
+
+### 2. Write the Base Modules
+
+These are ordinary `nn.Module` classes:
+
+```text
+RMSNorm / LayerNorm
+RotaryEmbedding or positional embedding
+Attention
+MLP
+DecoderLayer or EncoderLayer
+```
+
+They should be small enough that one layer can be inspected independently.
+
+### 3. Write the Base Model
+
+The base model owns the stack:
+
+```text
+MyModel
+  embed_tokens
+  layers
+  norm
+  rotary_emb
+```
+
+It returns hidden states, not task logits.
+
+For decoder-only LMs, the base model should handle:
+
+```text
+input_ids or inputs_embeds
+attention_mask
+position_ids
+past_key_values
+use_cache
+```
+
+### 4. Write Task Heads
+
+Task heads wrap the base model:
+
+```text
+MyModelForCausalLM
+MyModelForSequenceClassification
+MyModelForQuestionAnswering
+MyModelForTokenClassification
+```
+
+Each task head should:
+
+```text
+call the base model
+transform hidden states into task-specific logits
+compute loss if labels are provided
+return a typed ModelOutput
+```
+
+For language models, inherit `GenerationMixin` so `.generate()` works.
+
+### 5. Define the Pretrained Base Class
+
+Create a family-specific base class:
+
+```python
+class MyModelPreTrainedModel(PreTrainedModel):
+    config_class = MyModelConfig
+    base_model_prefix = "model"
+    supports_gradient_checkpointing = True
+```
+
+This class is where production behavior lives:
+
+```text
+weight initialization
+device-map hints
+attention backend support
+gradient checkpointing support
+cache placement rules
+which modules cannot be split
+```
+
+### 6. Define Tokenizer / Processor Classes
+
+For text-only models, define or reuse tokenizer classes.
+
+For multimodal models, define processors:
+
+```text
+ImageProcessor
+VideoProcessor
+FeatureExtractor
+Processor
+```
+
+The processor should return a `BatchFeature` or dict whose keys match `model.forward()`.
+
+### 7. Expose Classes Lazily
+
+The model package `__init__.py` should expose public classes without importing heavy dependencies immediately.
+In v5.14.0, Llama and Gemma4 Unified use `_LazyModule` plus an import-structure helper.
+
+This keeps:
+
+```text
+import transformers
+```
+
+fast and lightweight.
+
+### 8. Register With Auto Classes
+
+To make this work:
+
+```python
+AutoConfig.from_pretrained(...)
+AutoModel.from_pretrained(...)
+AutoModelForCausalLM.from_pretrained(...)
+AutoProcessor.from_pretrained(...)
+```
+
+the new config, model, tokenizer, and processor classes must be discoverable by the library's auto mappings.
+
+Conceptually:
+
+```text
+model_type string -> Config class
+Config class -> Model class
+Config class -> task-specific model class
+model repo files -> tokenizer / processor class
+```
+
+The user-facing result is simple:
+
+```python
+model = AutoModelForCausalLM.from_pretrained(repo_id)
+```
+
+but this only works because the package has declared the mapping between config and implementation.
+
+### 9. Return Standard Output Objects
+
+HF models usually return typed output containers:
+
+```text
+BaseModelOutputWithPast
+CausalLMOutputWithPast
+ModelOutput subclasses for multimodal extras
+```
+
+This keeps downstream code consistent:
+
+```python
+outputs = model(**inputs)
+outputs.logits
+outputs.past_key_values
+outputs.hidden_states
+outputs.attentions
+```
+
+Gemma4 Unified defines custom outputs because it may also return:
+
+```text
+image_hidden_states
+audio_hidden_states
+shared_kv_states
+```
+
+### 10. Keep the Educational Core Visible
+
+Even in production code, the architecture should still be readable:
+
+```text
+config -> modules -> base model -> task head -> processor/tokenizer -> auto API
+```
+
+Llama is the clean version of this pattern.
+Gemma4 Unified is the same pattern extended to multiple modalities.
+
+---
+
 ## A Good Reading Order for Any New Model
 
 When you open a Hugging Face model repo, read it in this order:
@@ -924,5 +1532,7 @@ For Gemma 4, the same process reveals the same Transformer spine plus multimodal
 - Raschka, *LLMs from Scratch*, [Gemma 4](https://github.com/rasbt/LLMs-from-scratch/tree/main/ch05/17_gemma4)
 - Hugging Face Transformers, [Llama model documentation](https://huggingface.co/docs/transformers/model_doc/llama)
 - Hugging Face Transformers, [Gemma 4 model documentation](https://huggingface.co/docs/transformers/model_doc/gemma4)
+- Hugging Face Transformers v5.14.0 source, [Llama implementation](https://github.com/huggingface/transformers/tree/v5.14.0/src/transformers/models/llama)
+- Hugging Face Transformers v5.14.0 source, [Gemma4 Unified implementation](https://github.com/huggingface/transformers/tree/v5.14.0/src/transformers/models/gemma4_unified)
 - Meta Llama, [Llama 3.2 model card](https://huggingface.co/meta-llama/Llama-3.2-1B)
 - Google, [Gemma 4 E2B model card](https://huggingface.co/google/gemma-4-E2B)
