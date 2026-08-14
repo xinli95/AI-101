@@ -1,50 +1,507 @@
-# Real-World Transformer Architectures: Llama 3 and Gemma 4
+# Implementing Real Transformer Architectures: Llama 3 and Gemma 4
 
-The previous sections introduced the main pieces of a modern decoder-only Transformer:
+The earlier sections explained the individual parts of a Transformer.
+This section answers two more practical questions:
 
-- tokenization and embeddings
-- causal self-attention
-- KV cache, MQA, and GQA
-- RMSNorm and Pre-Norm residual blocks
-- gated feed-forward networks
-- RoPE and long-context scaling
+1. **If we implement a Llama-like model from scratch, what classes do we need to write?**
+2. **When Hugging Face loads a model, what files and modules are actually involved?**
 
-This section connects those pieces to real Hugging Face `transformers` models. We will use two examples:
-
-- **Llama 3 / Llama 3.2**, a clean reference architecture for modern decoder-only LLMs
-- **Gemma 4**, a more advanced descendant that keeps the same core loop but adds hybrid attention, per-layer embeddings, and multimodal wrappers
+We will use Llama 3 / Llama 3.2 as the clean reference model, then compare it with Gemma 4.
 
 ```{note}
-The point here is not to memorize every number in every checkpoint. The useful skill is learning how to read a model config and infer the architecture it describes.
+This page is intentionally concrete. The goal is to connect formulas, PyTorch modules, Hugging Face model files, and real checkpoint names.
 ```
 
 ---
 
-## The Hugging Face Mental Model
+## What Does "Implement From Scratch" Mean?
 
-In Hugging Face, a model repository usually contains:
+There are three different levels of "from scratch":
 
-- `config.json`: architecture hyperparameters
-- tokenizer files: how text becomes token IDs
-- checkpoint files: learned tensors, often in `safetensors`
-- generation and chat-template metadata
+| Level | What you implement | What you still reuse |
+|---|---|---|
+| Educational forward pass | Model classes, tensor shapes, attention, MLP, norms | PyTorch, tokenizer, maybe downloaded weights |
+| Full inference stack | Forward pass plus generation loop, sampling, KV cache | PyTorch kernels and tokenizer library |
+| Full pretraining system | Model, data pipeline, distributed training, optimizer, checkpointing | GPU libraries and distributed runtimes |
 
-The architecture is mostly encoded in the config. For decoder-only language models, the key fields are usually:
+Raschka's Llama and Gemma notebooks are closest to the first level. They are excellent for learning because they show the model as ordinary PyTorch modules instead of hiding it behind `AutoModelForCausalLM`.
 
-| Concept | Typical config field | Meaning |
-|---|---:|---|
-| Vocabulary size | `vocab_size` | Number of token IDs the embedding table supports |
-| Width | `hidden_size` | Residual-stream dimension $d_{\text{model}}$ |
-| Depth | `num_hidden_layers` | Number of Transformer blocks |
-| Attention heads | `num_attention_heads` | Number of query heads |
-| KV heads | `num_key_value_heads` | Number of key/value heads for MHA, MQA, or GQA |
-| FFN width | `intermediate_size` | Hidden dimension inside the feed-forward network |
-| Positional system | `rope_theta`, `rope_scaling`, `rope_parameters` | RoPE base and scaling recipe |
-| Normalization | `rms_norm_eps` | RMSNorm epsilon |
-| Cache | `use_cache` | Whether generation returns reusable KV states |
-| Embedding tying | `tie_word_embeddings` | Whether input embedding and output head share weights |
+For a Llama-style model, the minimal class list is:
 
-You can inspect these fields without loading model weights:
+```text
+RMSNorm
+RoPE utilities
+GroupedQueryAttention
+FeedForward / SwiGLU
+TransformerBlock
+LlamaModel
+optional: weight-loading helper
+optional: generation loop
+```
+
+That is the full architecture. Everything else is engineering.
+
+---
+
+## Minimal Llama 3.2 Configuration
+
+Start with a config dictionary. This is the from-scratch version of Hugging Face's `config.json`.
+
+```python
+import torch
+
+LLAMA32_1B_CONFIG = {
+    "vocab_size": 128_256,
+    "context_length": 131_072,
+    "emb_dim": 2048,
+    "n_heads": 32,
+    "n_layers": 16,
+    "hidden_dim": 8192,
+    "n_kv_groups": 8,
+    "rope_base": 500_000.0,
+    "dtype": torch.bfloat16,
+    "rope_freq": {
+        "factor": 32.0,
+        "low_freq_factor": 1.0,
+        "high_freq_factor": 4.0,
+        "original_context_length": 8192,
+    },
+}
+```
+
+Each field immediately creates a tensor shape:
+
+| Config field | Used by | Shape consequence |
+|---|---|---|
+| `vocab_size` | token embedding and output head | `(vocab_size, emb_dim)` and `(emb_dim, vocab_size)` |
+| `emb_dim` | residual stream | every token vector has width 2048 |
+| `n_layers` | block stack | build 16 Transformer blocks |
+| `n_heads` | query heads | 32 query heads |
+| `n_kv_groups` | key/value heads | 8 KV heads, shared across query groups |
+| `hidden_dim` | MLP | expand 2048 -> 8192 -> 2048 |
+| `context_length` | masks and RoPE cache | precompute position info up to 131K tokens |
+
+The attention head dimension is:
+
+$$
+d_h = \frac{2048}{32} = 64
+$$
+
+The GQA group size is:
+
+$$
+\text{group size} = \frac{32}{8} = 4
+$$
+
+So every key/value head is reused by 4 query heads.
+
+---
+
+## Step 1: RMSNorm
+
+Llama uses RMSNorm instead of LayerNorm. The implementation is small:
+
+```python
+import torch
+import torch.nn as nn
+
+
+class RMSNorm(nn.Module):
+    def __init__(self, dim, eps=1e-5, dtype=None):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim, dtype=dtype))
+
+    def forward(self, x):
+        x_float = x.float()
+        rms = x_float.pow(2).mean(dim=-1, keepdim=True).sqrt()
+        x_norm = x_float / (rms + self.eps)
+        return (x_norm * self.weight.float()).to(dtype=x.dtype)
+```
+
+Input and output shape are the same:
+
+```text
+[batch, seq_len, emb_dim] -> [batch, seq_len, emb_dim]
+```
+
+RMSNorm does not mix tokens. It rescales each token vector independently.
+
+---
+
+## Step 2: RoPE Utilities
+
+RoPE is not a layer with trainable parameters. It is a deterministic rotation applied to query and key vectors.
+
+At model initialization, precompute cosine and sine tables:
+
+```python
+def compute_rope_params(head_dim, theta_base, context_length, device=None):
+    assert head_dim % 2 == 0
+
+    inv_freq = 1.0 / (
+        theta_base ** (torch.arange(0, head_dim, 2, device=device).float() / head_dim)
+    )
+    positions = torch.arange(context_length, device=device).float()
+    freqs = torch.outer(positions, inv_freq)
+
+    cos = freqs.cos()
+    sin = freqs.sin()
+    return cos, sin
+```
+
+Then apply the rotation inside attention:
+
+```python
+def apply_rope(x, cos, sin):
+    # x: [batch, heads, seq_len, head_dim]
+    seq_len = x.shape[-2]
+    cos = cos[:seq_len].unsqueeze(0).unsqueeze(0)
+    sin = sin[:seq_len].unsqueeze(0).unsqueeze(0)
+
+    x_even = x[..., 0::2]
+    x_odd = x[..., 1::2]
+
+    x_rotated = torch.empty_like(x)
+    x_rotated[..., 0::2] = x_even * cos - x_odd * sin
+    x_rotated[..., 1::2] = x_even * sin + x_odd * cos
+    return x_rotated
+```
+
+The key point:
+
+```text
+RoPE changes Q and K.
+RoPE does not change V.
+```
+
+---
+
+## Step 3: Grouped-Query Attention
+
+The attention module owns four projections:
+
+```text
+q_proj: hidden -> all query heads
+k_proj: hidden -> fewer key heads
+v_proj: hidden -> fewer value heads
+o_proj: all query heads -> hidden
+```
+
+For Llama 3.2 1B:
+
+| Projection | Output width |
+|---|---:|
+| `q_proj` | `32 * 64 = 2048` |
+| `k_proj` | `8 * 64 = 512` |
+| `v_proj` | `8 * 64 = 512` |
+| `o_proj` | `2048` |
+
+That is why GQA saves KV-cache memory: keys and values are narrower than queries.
+
+```python
+class GroupedQueryAttention(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.num_heads = cfg["n_heads"]
+        self.num_kv_heads = cfg["n_kv_groups"]
+        self.head_dim = cfg["emb_dim"] // cfg["n_heads"]
+        self.group_size = self.num_heads // self.num_kv_heads
+
+        self.q_proj = nn.Linear(
+            cfg["emb_dim"], self.num_heads * self.head_dim, bias=False, dtype=cfg["dtype"]
+        )
+        self.k_proj = nn.Linear(
+            cfg["emb_dim"], self.num_kv_heads * self.head_dim, bias=False, dtype=cfg["dtype"]
+        )
+        self.v_proj = nn.Linear(
+            cfg["emb_dim"], self.num_kv_heads * self.head_dim, bias=False, dtype=cfg["dtype"]
+        )
+        self.o_proj = nn.Linear(
+            self.num_heads * self.head_dim, cfg["emb_dim"], bias=False, dtype=cfg["dtype"]
+        )
+
+    def forward(self, x, mask, cos, sin):
+        b, t, _ = x.shape
+
+        q = self.q_proj(x).view(b, t, self.num_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(x).view(b, t, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(x).view(b, t, self.num_kv_heads, self.head_dim).transpose(1, 2)
+
+        q = apply_rope(q, cos, sin)
+        k = apply_rope(k, cos, sin)
+
+        k = k.repeat_interleave(self.group_size, dim=1)
+        v = v.repeat_interleave(self.group_size, dim=1)
+
+        scores = q @ k.transpose(-2, -1)
+        scores = scores / (self.head_dim ** 0.5)
+        scores = scores.masked_fill(mask, torch.finfo(scores.dtype).min)
+
+        weights = torch.softmax(scores, dim=-1)
+        context = weights @ v
+
+        context = context.transpose(1, 2).contiguous().view(b, t, -1)
+        return self.o_proj(context)
+```
+
+Shape flow:
+
+```text
+x:       [B, T, 2048]
+q:       [B, 32, T, 64]
+k/v:     [B,  8, T, 64]
+k/v rep: [B, 32, T, 64]
+context: [B, 32, T, 64]
+output:  [B, T, 2048]
+```
+
+In production inference, you usually do not recompute all previous `k` and `v`.
+You append new keys and values to a KV cache.
+The educational version can skip that at first.
+
+---
+
+## Step 4: SwiGLU Feed-Forward Network
+
+The Llama MLP has three matrices, not two:
+
+```python
+class FeedForward(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.gate_proj = nn.Linear(cfg["emb_dim"], cfg["hidden_dim"], bias=False, dtype=cfg["dtype"])
+        self.up_proj = nn.Linear(cfg["emb_dim"], cfg["hidden_dim"], bias=False, dtype=cfg["dtype"])
+        self.down_proj = nn.Linear(cfg["hidden_dim"], cfg["emb_dim"], bias=False, dtype=cfg["dtype"])
+
+    def forward(self, x):
+        gate = torch.nn.functional.silu(self.gate_proj(x))
+        up = self.up_proj(x)
+        return self.down_proj(gate * up)
+```
+
+Shape flow:
+
+```text
+x:          [B, T, 2048]
+gate_proj:  [B, T, 8192]
+up_proj:    [B, T, 8192]
+multiply:   [B, T, 8192]
+down_proj:  [B, T, 2048]
+```
+
+Attention mixes information across tokens.
+The MLP transforms each token independently.
+
+---
+
+## Step 5: One Transformer Block
+
+A Llama block is Pre-Norm:
+
+```python
+class TransformerBlock(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.self_attn = GroupedQueryAttention(cfg)
+        self.mlp = FeedForward(cfg)
+        self.input_layernorm = RMSNorm(cfg["emb_dim"], eps=1e-5, dtype=cfg["dtype"])
+        self.post_attention_layernorm = RMSNorm(cfg["emb_dim"], eps=1e-5, dtype=cfg["dtype"])
+
+    def forward(self, x, mask, cos, sin):
+        residual = x
+        x = self.input_layernorm(x)
+        x = self.self_attn(x, mask, cos, sin)
+        x = residual + x
+
+        residual = x
+        x = self.post_attention_layernorm(x)
+        x = self.mlp(x)
+        x = residual + x
+        return x
+```
+
+The block preserves shape:
+
+```text
+[B, T, emb_dim] -> [B, T, emb_dim]
+```
+
+This is why blocks can be stacked in a `ModuleList`.
+
+---
+
+## Step 6: The Full Llama Model
+
+The complete model is just:
+
+```text
+embedding table
+N Transformer blocks
+final RMSNorm
+LM head
+```
+
+```python
+class Llama3Model(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.cfg = cfg
+
+        self.embed_tokens = nn.Embedding(
+            cfg["vocab_size"], cfg["emb_dim"], dtype=cfg["dtype"]
+        )
+        self.layers = nn.ModuleList(
+            [TransformerBlock(cfg) for _ in range(cfg["n_layers"])]
+        )
+        self.norm = RMSNorm(cfg["emb_dim"], eps=1e-5, dtype=cfg["dtype"])
+        self.lm_head = nn.Linear(
+            cfg["emb_dim"], cfg["vocab_size"], bias=False, dtype=cfg["dtype"]
+        )
+
+        cos, sin = compute_rope_params(
+            head_dim=cfg["emb_dim"] // cfg["n_heads"],
+            theta_base=cfg["rope_base"],
+            context_length=cfg["context_length"],
+        )
+        self.register_buffer("cos", cos, persistent=False)
+        self.register_buffer("sin", sin, persistent=False)
+
+    def forward(self, input_ids):
+        b, t = input_ids.shape
+
+        x = self.embed_tokens(input_ids)
+        mask = torch.triu(
+            torch.ones(t, t, device=input_ids.device, dtype=torch.bool),
+            diagonal=1,
+        )
+        mask = mask.unsqueeze(0).unsqueeze(0)
+
+        for layer in self.layers:
+            x = layer(x, mask, self.cos, self.sin)
+
+        x = self.norm(x)
+        logits = self.lm_head(x)
+        return logits
+```
+
+You can test a randomly initialized model before loading real weights:
+
+```python
+cfg = LLAMA32_1B_CONFIG
+model = Llama3Model(cfg)
+
+input_ids = torch.randint(0, cfg["vocab_size"], (2, 16))
+logits = model(input_ids)
+
+print(logits.shape)
+# torch.Size([2, 16, 128256])
+```
+
+At this point you have implemented the Llama architecture.
+It will not produce useful text until you load trained weights.
+
+---
+
+## What Does Hugging Face Need to Load a Model?
+
+When you write:
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model_id = "meta-llama/Llama-3.2-1B"
+
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+model = AutoModelForCausalLM.from_pretrained(model_id)
+```
+
+Hugging Face does several things.
+
+### 1. It Downloads the Model Configuration
+
+The most important file is:
+
+```text
+config.json
+```
+
+This file says which architecture to instantiate and with what hyperparameters.
+For Llama, the relevant fields look like:
+
+```json
+{
+  "model_type": "llama",
+  "architectures": ["LlamaForCausalLM"],
+  "vocab_size": 128256,
+  "hidden_size": 2048,
+  "intermediate_size": 8192,
+  "num_hidden_layers": 16,
+  "num_attention_heads": 32,
+  "num_key_value_heads": 8,
+  "rope_theta": 500000.0,
+  "rms_norm_eps": 1e-05,
+  "tie_word_embeddings": true
+}
+```
+
+`model_type` selects the implementation family.
+For example, `"llama"` maps to Llama config and model classes inside `transformers`.
+
+### 2. It Instantiates the Python Module
+
+For causal language modeling, the top-level module is:
+
+```text
+LlamaForCausalLM
+```
+
+Inside it:
+
+```text
+LlamaForCausalLM
+  lm_head
+  model: LlamaModel
+    embed_tokens
+    layers: ModuleList[LlamaDecoderLayer]
+    norm
+```
+
+Inside one decoder layer:
+
+```text
+LlamaDecoderLayer
+  self_attn: LlamaAttention
+    q_proj
+    k_proj
+    v_proj
+    o_proj
+  mlp: LlamaMLP
+    gate_proj
+    up_proj
+    down_proj
+  input_layernorm
+  post_attention_layernorm
+```
+
+This is the same module tree we wrote from scratch.
+
+You can inspect it:
+
+```python
+from transformers import AutoModelForCausalLM
+
+model = AutoModelForCausalLM.from_pretrained(
+    "meta-llama/Llama-3.2-1B",
+    device_map="auto",
+    dtype="auto",
+)
+
+print(model)
+print(model.model.layers[0])
+```
+
+Or inspect only the config without downloading weights:
 
 ```python
 from transformers import AutoConfig
@@ -57,370 +514,347 @@ print(cfg.num_hidden_layers)
 print(cfg.num_attention_heads, cfg.num_key_value_heads)
 ```
 
-For models with nested sub-configs, such as Gemma 4, the text decoder lives inside `text_config`:
+### 3. It Downloads the Weights
+
+The learned tensors are stored in one or more files:
+
+```text
+model.safetensors
+```
+
+or, for larger models:
+
+```text
+model-00001-of-00004.safetensors
+model-00002-of-00004.safetensors
+model-00003-of-00004.safetensors
+model-00004-of-00004.safetensors
+model.safetensors.index.json
+```
+
+The tensor names must match the module names.
+For example:
+
+```text
+model.embed_tokens.weight
+model.layers.0.self_attn.q_proj.weight
+model.layers.0.self_attn.k_proj.weight
+model.layers.0.self_attn.v_proj.weight
+model.layers.0.self_attn.o_proj.weight
+model.layers.0.mlp.gate_proj.weight
+model.layers.0.mlp.up_proj.weight
+model.layers.0.mlp.down_proj.weight
+model.layers.0.input_layernorm.weight
+model.layers.0.post_attention_layernorm.weight
+model.norm.weight
+lm_head.weight
+```
+
+Loading weights is basically:
+
+```text
+create empty module tree from config
+read tensors from safetensors
+copy each tensor into the matching parameter name
+```
+
+Raschka's notebook makes this explicit with a helper like:
 
 ```python
-from transformers import AutoConfig
+from safetensors.torch import load_file
 
-cfg = AutoConfig.from_pretrained("google/gemma-4-E2B")
-text_cfg = cfg.text_config
-
-print(cfg.model_type)
-print(text_cfg.hidden_size)
-print(text_cfg.layer_types[:10])
-print(text_cfg.rope_parameters)
+state_dict = load_file("model.safetensors")
+load_weights_into_llama(model, cfg, state_dict)
 ```
+
+Hugging Face does the same job automatically inside `from_pretrained()`.
+
+### 4. It Loads the Tokenizer
+
+The model cannot consume raw strings.
+It consumes token IDs.
+
+Tokenizer files commonly include:
+
+```text
+tokenizer.json
+tokenizer_config.json
+special_tokens_map.json
+```
+
+Some older tokenizers use files such as:
+
+```text
+vocab.json
+merges.txt
+tokenizer.model
+```
+
+The tokenizer must agree with the model's `vocab_size` and special tokens.
+If the tokenizer and model checkpoint do not match, the model will receive the wrong token IDs.
+
+### 5. It Optionally Loads Generation and Chat Metadata
+
+Other useful files:
+
+```text
+generation_config.json
+chat_template.jinja
+processor_config.json
+preprocessor_config.json
+```
+
+For plain text completion, these are convenient but not always essential.
+For instruction-tuned or multimodal models, they matter more because prompts must be formatted exactly as the model saw during training.
 
 ---
 
-## Llama 3 as the Clean Decoder-Only Reference
+## Minimum Requirements for Different Tasks
 
-Llama 3 is a causal language model: it predicts the next token from the tokens before it.
-The high-level computation is:
-
-```text
-input_ids
-  -> token embeddings
-  -> repeated decoder blocks
-       -> RMSNorm
-       -> causal grouped-query attention with RoPE
-       -> residual add
-       -> RMSNorm
-       -> SwiGLU feed-forward network
-       -> residual add
-  -> final RMSNorm
-  -> LM head
-  -> logits over vocabulary
-```
-
-At training time, the model receives a sequence and predicts the next token at every position.
-At generation time, it repeatedly feeds back the newly generated token and reuses the KV cache.
-
-### A Llama-Style Block
-
-Ignoring implementation details such as tensor parallelism and fused kernels, a Llama-style block looks like:
-
-$$
-x \leftarrow x + \mathrm{GQA}(\mathrm{RMSNorm}(x))
-$$
-
-$$
-x \leftarrow x + \mathrm{SwiGLU}(\mathrm{RMSNorm}(x))
-$$
-
-The attention sublayer is causal and uses RoPE on queries and keys:
-
-$$
-Q = xW_Q,\quad K = xW_K,\quad V = xW_V
-$$
-
-$$
-\tilde{Q} = \mathrm{RoPE}(Q),\quad \tilde{K} = \mathrm{RoPE}(K)
-$$
-
-$$
-\mathrm{Attention}(\tilde{Q}, \tilde{K}, V)
-= \mathrm{softmax}\left(\frac{\tilde{Q}\tilde{K}^{\top}}{\sqrt{d_h}} + M_{\text{causal}}\right)V
-$$
-
-The FFN uses a gated structure:
-
-$$
-\mathrm{SwiGLU}(x)
-= W_{\text{down}}\left(\mathrm{SiLU}(xW_{\text{gate}}) \odot xW_{\text{up}}\right)
-$$
-
-This is why Hugging Face Llama checkpoints contain names such as:
-
-```text
-model.embed_tokens
-model.layers.0.input_layernorm
-model.layers.0.self_attn.q_proj
-model.layers.0.self_attn.k_proj
-model.layers.0.self_attn.v_proj
-model.layers.0.self_attn.o_proj
-model.layers.0.post_attention_layernorm
-model.layers.0.mlp.gate_proj
-model.layers.0.mlp.up_proj
-model.layers.0.mlp.down_proj
-model.norm
-lm_head
-```
-
-Each name maps directly to one concept from the earlier chapter.
-
-### Llama 3.2 1B: A Compact Example
-
-The Raschka `standalone-llama32.ipynb` implementation is useful because it shows the architecture in compact PyTorch. A representative Llama 3.2 1B config is:
-
-| Field | Value | Architectural meaning |
-|---|---:|---|
-| `vocab_size` | 128,256 | Token embedding rows and LM-head output classes |
-| `context_length` / `max_position_embeddings` | 131,072 | Long-context target |
-| `emb_dim` / `hidden_size` | 2,048 | Residual-stream width |
-| `n_layers` / `num_hidden_layers` | 16 | Number of decoder blocks |
-| `n_heads` / `num_attention_heads` | 32 | Query heads |
-| `n_kv_groups` / `num_key_value_heads` | 8 | Key/value heads for GQA |
-| `hidden_dim` / `intermediate_size` | 8,192 | FFN expansion dimension |
-| `rope_base` / `rope_theta` | 500,000 | RoPE frequency base |
-| `dtype` | `bfloat16` | Common inference/training weight dtype |
-
-The head dimension is:
-
-$$
-d_h = \frac{2048}{32} = 64
-$$
-
-Because there are 32 query heads and 8 KV heads, each KV head is shared by:
-
-$$
-\frac{32}{8} = 4
-$$
-
-query heads. This is exactly GQA. Compared with full MHA, the KV cache stores 8 key heads and 8 value heads instead of 32 and 32, reducing attention-cache memory by about 4x for this part of the model.
-
-### Llama 3 8B: The Same Pattern at Larger Width
-
-Llama 3 8B uses the same conceptual block:
-
-| Field | Typical value | Meaning |
-|---|---:|---|
-| `hidden_size` | 4,096 | Wider residual stream |
-| `num_hidden_layers` | 32 | Deeper stack |
-| `num_attention_heads` | 32 | Query heads |
-| `num_key_value_heads` | 8 | GQA with 4 query heads per KV head |
-| `intermediate_size` | 14,336 | SwiGLU FFN dimension |
-| `vocab_size` | 128,256 | Llama 3 tokenizer vocabulary |
-| `max_position_embeddings` | 8,192 | Original Llama 3 context length |
-| `rope_theta` | 500,000 | RoPE base |
-
-The architecture is not fundamentally different from the 1B version. The larger model mostly increases width and depth.
-
----
-
-## Running Llama Through `transformers`
-
-The simplest inference path is the pipeline API:
-
-```python
-import torch
-from transformers import pipeline
-
-model_id = "meta-llama/Llama-3.2-1B"
-
-pipe = pipeline(
-    "text-generation",
-    model=model_id,
-    torch_dtype=torch.bfloat16,
-    device_map="auto",
-)
-
-pipe("The key idea behind grouped-query attention is", max_new_tokens=80)
-```
-
-For a more explicit path:
-
-```python
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-model_id = "meta-llama/Llama-3.2-1B"
-
-tokenizer = AutoTokenizer.from_pretrained(model_id)
-model = AutoModelForCausalLM.from_pretrained(
-    model_id,
-    dtype=torch.bfloat16,
-    device_map="auto",
-)
-
-inputs = tokenizer("The key idea behind grouped-query attention is", return_tensors="pt").to(model.device)
-outputs = model.generate(**inputs, max_new_tokens=80, use_cache=True)
-
-print(tokenizer.decode(outputs[0], skip_special_tokens=True))
-```
-
-```{admonition} Practical note
-:class: important
-
-Some Meta Llama repositories are gated. If loading fails with an access error, the architecture can still be studied via `AutoConfig`, public model cards, or from-scratch educational implementations; loading official weights requires accepting the model license and authenticating with Hugging Face.
-```
-
-### From Scratch vs Hugging Face
-
-Raschka's educational implementation and Hugging Face's production implementation describe the same computation at different levels of engineering:
-
-| Educational implementation | Hugging Face implementation |
+| Task | Required pieces |
 |---|---|
-| Plain `nn.Linear` projections | Same tensors, often wrapped with optimized attention paths |
-| Manual causal mask | Generated internally from `attention_mask` and cache position |
-| Hand-written GQA repeat | Kernel-aware GQA inside attention implementation |
-| Precomputed RoPE `cos`/`sin` buffers | RoPE utilities driven by config |
-| Simple generation loop | `generate()` with sampling, beam search, cache classes, stopping criteria |
-| Direct `.pth` loading | `from_pretrained()` loading sharded `safetensors` |
+| Random forward pass | config + architecture code |
+| Use pretrained model on token IDs | config + architecture code + weights |
+| Generate from text | config + architecture code + weights + tokenizer + generation loop |
+| Chat with an instruct model | all of the above + chat template / special tokens |
+| Load a multimodal model | all of the above + processor + modality encoders |
 
-The important lesson: `transformers` does not hide the architecture. It packages the same modules behind a stable API.
+This is the most useful mental model:
+
+```text
+config decides the shape
+code defines the computation
+weights store learned tensors
+tokenizer maps text to IDs
+generation code turns logits into new tokens
+```
 
 ---
 
-## Gemma 4: Same Transformer Spine, More Modern Engineering
+## How Generation Works
 
-Gemma 4 is still built around decoder-only Transformer language modeling, but it adds several techniques aimed at long context, efficiency, and multimodal use.
+Once the model returns logits, generation is just a loop:
 
-The full Gemma 4 checkpoint can wrap text, image, audio, or video handling. For understanding the Transformer architecture, focus on the **text decoder**:
+```python
+def generate(model, input_ids, max_new_tokens, eos_token_id=None):
+    model.eval()
 
-```text
-input_ids
-  -> token embeddings
-  -> optional per-layer embedding signals
-  -> repeated decoder blocks
-       -> local sliding attention or global full attention
-       -> extra RMSNorm points around attention and FFN outputs
-       -> gated GELU feed-forward network
-       -> optional per-layer embedding residual
-  -> final RMSNorm
-  -> tied LM head
-  -> soft-capped logits
+    for _ in range(max_new_tokens):
+        with torch.no_grad():
+            logits = model(input_ids)
+
+        next_token_logits = logits[:, -1, :]
+        next_token_id = torch.argmax(next_token_logits, dim=-1, keepdim=True)
+        input_ids = torch.cat([input_ids, next_token_id], dim=1)
+
+        if eos_token_id is not None and next_token_id.item() == eos_token_id:
+            break
+
+    return input_ids
 ```
 
-### Gemma 4 E2B and E4B at a Glance
+This greedy version is deliberately simple.
+Production `generate()` adds:
 
-The dense E2B and E4B models are good teaching examples because they are relatively small but architecturally rich.
+- KV cache
+- temperature
+- top-k / top-p sampling
+- repetition penalties
+- stopping criteria
+- batch handling
+- streaming
 
-| Field | Gemma 4 E2B | Gemma 4 E4B | Meaning |
-|---|---:|---:|---|
-| `vocab_size` | 262,144 | 262,144 | Main token vocabulary |
-| `hidden_size` | 1,536 | 2,560 | Residual-stream width |
-| `num_hidden_layers` | 35 | 42 | Decoder depth |
-| `num_attention_heads` | 8 | 8 | Query heads |
-| `num_key_value_heads` | 1 | 2 | MQA/GQA-style KV sharing |
-| `head_dim` | 256 | 256 | Local attention head dimension |
-| `global_head_dim` | 512 | 512 | Full-attention head dimension |
-| `intermediate_size` | 6,144 | 10,240 | Gated FFN width |
-| `sliding_window` | 512 | 512 | Local attention window |
-| `max_position_embeddings` | 131,072 | 131,072 | Text context length |
-| `hidden_size_per_layer_input` | 256 | 256 | Per-layer embedding width |
-| `num_kv_shared_layers` | 20 | 18 | Later layers sharing KV projections |
-| `tie_word_embeddings` | `True` | `True` | Input embedding and LM head share weights |
+But the core is still:
 
-The "E" models are efficient-parameter variants. They include **Per-Layer Embeddings (PLE)**: every decoder layer receives an extra low-dimensional token signal instead of relying only on the first input embedding.
+```text
+forward -> last-token logits -> choose next token -> append -> repeat
+```
 
-### Hybrid Attention: Local Plus Global
+---
 
-Llama 3 uses the same full causal attention pattern at each layer. Gemma 4 alternates between:
+## How Llama Maps to Hugging Face `transformers`
 
-- **sliding attention**, where each token mostly attends to a recent local window
-- **full attention**, where tokens can attend to the full causal prefix
+The from-scratch names and Hugging Face names are nearly one-to-one:
 
-For E2B, the layer pattern is:
+| From-scratch class or field | Hugging Face Llama module or field |
+|---|---|
+| `Llama3Model` | `LlamaForCausalLM` + inner `LlamaModel` |
+| `embed_tokens` | `model.embed_tokens` |
+| `TransformerBlock` | `model.layers[i]` |
+| `GroupedQueryAttention` | `model.layers[i].self_attn` |
+| `q_proj`, `k_proj`, `v_proj`, `o_proj` | same names in HF |
+| `FeedForward` | `model.layers[i].mlp` |
+| `gate_proj`, `up_proj`, `down_proj` | same names in HF |
+| `RMSNorm` before attention | `input_layernorm` |
+| `RMSNorm` before MLP | `post_attention_layernorm` |
+| `norm` | `model.norm` |
+| `lm_head` | `lm_head` |
+| `n_heads` | `num_attention_heads` |
+| `n_kv_groups` | `num_key_value_heads` |
+| `emb_dim` | `hidden_size` |
+| `hidden_dim` | `intermediate_size` |
+| `rope_base` | `rope_theta` |
+
+This is why learning from scratch helps.
+Once you can write the small version, the Hugging Face model printout stops being mysterious.
+
+---
+
+## Gemma 4: Same Spine, More Design Choices
+
+Gemma 4 is more complex than Llama, but it is not a different species.
+It is still:
+
+```text
+tokens -> embeddings -> repeated decoder blocks -> final norm -> logits
+```
+
+The interesting differences are inside the blocks.
+
+### Dense Gemma 4 Config
+
+Raschka's Gemma 4 notebook uses dense E2B and E4B configs like this:
+
+```python
+GEMMA4_E2B_CONFIG = {
+    "vocab_size": 262_144,
+    "vocab_size_per_layer_input": 262_144,
+    "emb_dim": 1536,
+    "hidden_dim": 4 * 1536,
+    "n_layers": 35,
+    "n_heads": 8,
+    "head_dim": 256,
+    "n_kv_heads": 1,
+    "global_head_dim": 512,
+    "context_length": 131_072,
+    "sliding_window": 512,
+    "layer_types": (["sliding_attention"] * 4 + ["full_attention"]) * 7,
+    "hidden_size_per_layer_input": 256,
+    "num_kv_shared_layers": 20,
+    "use_double_wide_mlp": True,
+    "rope_local_base": 10_000.0,
+    "rope_global_base": 1_000_000.0,
+    "rope_global_type": "proportional",
+    "rope_global_partial_rotary_factor": 0.25,
+    "layer_norm_eps": 1e-6,
+    "final_logit_softcap": 30.0,
+    "tie_word_embeddings": True,
+    "dtype": torch.bfloat16,
+}
+```
+
+The big architectural differences from Llama are:
+
+| Design choice | Llama 3 / 3.2 | Gemma 4 E2B / E4B |
+|---|---|---|
+| Attention layers | full causal attention in every layer | mostly sliding attention, periodic full attention |
+| KV sharing | GQA | MQA/GQA plus optional cross-layer KV sharing |
+| RoPE | one main RoPE recipe | separate local and global RoPE recipes |
+| Normalization | two RMSNorms per block | RMSNorm before and after attention/MLP outputs |
+| MLP activation | SiLU / SwiGLU | GELU with tanh approximation |
+| Extra embeddings | token embedding only | token embedding plus per-layer embeddings |
+| Output head | may or may not be tied | tied to token embedding in dense configs |
+
+### Gemma 4 Block Structure
+
+A simplified Gemma 4 dense block looks like:
+
+```python
+class Gemma4DenseBlock(nn.Module):
+    def __init__(self, cfg, layer_idx):
+        super().__init__()
+        self.layer_type = cfg["layer_types"][layer_idx]
+        self.att = Gemma4Attention(cfg, layer_idx)
+        self.mlp = Gemma4FeedForward(cfg, layer_idx)
+
+        self.input_layernorm = Gemma4RMSNorm(cfg["emb_dim"], eps=cfg["layer_norm_eps"])
+        self.post_attention_layernorm = Gemma4RMSNorm(cfg["emb_dim"], eps=cfg["layer_norm_eps"])
+        self.pre_feedforward_layernorm = Gemma4RMSNorm(cfg["emb_dim"], eps=cfg["layer_norm_eps"])
+        self.post_feedforward_layernorm = Gemma4RMSNorm(cfg["emb_dim"], eps=cfg["layer_norm_eps"])
+
+    def forward(self, x, mask_local, mask_global, cos_local, sin_local, cos_global, sin_global):
+        mask = mask_local if self.layer_type == "sliding_attention" else mask_global
+        cos = cos_local if self.layer_type == "sliding_attention" else cos_global
+        sin = sin_local if self.layer_type == "sliding_attention" else sin_global
+
+        residual = x
+        x = self.input_layernorm(x)
+        x = self.att(x, mask, cos, sin)
+        x = self.post_attention_layernorm(x)
+        x = residual + x
+
+        residual = x
+        x = self.pre_feedforward_layernorm(x)
+        x = self.mlp(x)
+        x = self.post_feedforward_layernorm(x)
+        x = residual + x
+        return x
+```
+
+This is still the same residual pattern, but Gemma controls scale more aggressively.
+
+### Sliding Attention vs Full Attention
+
+A full causal mask blocks future tokens:
+
+```text
+token t can attend to tokens <= t
+```
+
+A sliding-window mask also blocks tokens too far in the past:
+
+```text
+token t can attend to roughly tokens [t - window, ..., t]
+```
+
+For Gemma 4 E2B:
 
 ```python
 layer_types = (["sliding_attention"] * 4 + ["full_attention"]) * 7
 ```
 
-For E4B, the pattern is:
+That means:
 
-```python
-layer_types = (["sliding_attention"] * 5 + ["full_attention"]) * 7
+```text
+4 local layers
+1 global layer
+repeat 7 times
+= 35 layers
 ```
 
-This gives most layers the speed and memory behavior of local attention, while periodic global layers maintain long-range communication. It is a practical answer to the long-context problem: not every layer needs full quadratic attention.
-
-### Two RoPE Regimes
-
-Gemma 4 uses separate RoPE settings for local and global attention:
-
-| Layer type | RoPE behavior |
-|---|---|
-| Sliding attention | Default RoPE, usually with `rope_theta = 10_000` |
-| Full attention | Proportional RoPE, usually with `rope_theta = 1_000_000` and partial rotary factor `0.25` |
-
-This is why the Gemma 4 config stores nested `rope_parameters`, for example:
-
-```python
-{
-    "sliding_attention": {
-        "rope_type": "default",
-        "rope_theta": 10_000.0,
-    },
-    "full_attention": {
-        "rope_type": "proportional",
-        "rope_theta": 1_000_000.0,
-        "partial_rotary_factor": 0.25,
-    },
-}
-```
-
-The local layers preserve short-range behavior. The global layers use a long-context-friendly positional recipe.
+Most layers are cheap local layers.
+Periodic full layers let information travel globally.
 
 ### Per-Layer Embeddings
 
-In a classic decoder-only Transformer, token identity enters once:
+In Llama, token identity enters once:
 
 ```text
-input_ids -> token embedding -> residual stream
+input_ids -> embed_tokens -> residual stream
 ```
 
-Gemma 4 adds a second path:
+Gemma 4 adds per-layer embedding input:
 
 ```text
 input_ids
-  -> packed per-layer embedding table
-  -> reshape to [batch, seq, num_layers, ple_dim]
-  -> feed layer i a small auxiliary vector
+  -> embed_tokens_per_layer
+  -> reshape into one small vector per layer
+  -> feed layer i a layer-specific token signal
 ```
 
-It also projects the normal input embedding into the same per-layer space. The two signals are combined and normalized before being used inside each layer.
-
-Conceptually, this gives every layer its own compact reminder of token identity:
-
-$$
-p_i = \frac{p^{\text{token}}_i + p^{\text{context}}_i}{\sqrt{2}}
-$$
-
-Then layer $i$ can add a gated residual derived from $p_i$.
-
-```{admonition} Why PLE matters
-:class: tip
-
-PLE increases useful capacity without making the main residual stream as wide as a conventional model with the same total parameter count. That is why Gemma 4 E2B can have more total embedding parameters than its "effective" parameter count suggests.
-```
-
-### More Normalization Points
-
-Llama-style blocks typically use RMSNorm before attention and before the FFN.
-Gemma 4 uses additional RMSNorms around sublayer outputs:
+Conceptually:
 
 ```text
-x_attn = attention(input_layernorm(x))
-x = x + post_attention_layernorm(x_attn)
-
-x_ffn = mlp(pre_feedforward_layernorm(x))
-x = x + post_feedforward_layernorm(x_ffn)
+main residual stream:        [B, T, emb_dim]
+per-layer token signal:      [B, T, n_layers, ple_dim]
+signal used by layer i:      [B, T, ple_dim]
 ```
 
-This is still residual learning, but with more explicit scale control.
+This gives each layer a compact token-specific side input.
 
-### Gemma 4 Feed-Forward Network
+### Gemma 4 in Hugging Face
 
-Gemma 4 uses a gated FFN like other modern LLMs, but its activation is GELU with tanh approximation rather than Llama's SiLU/SwiGLU:
-
-$$
-\mathrm{GatedGELU}(x)
-= W_{\text{down}}\left(\mathrm{GELU}(xW_{\text{gate}}) \odot xW_{\text{up}}\right)
-$$
-
-The shape logic is the same as SwiGLU:
-
-- `gate_proj`: creates the gate branch
-- `up_proj`: creates the value branch
-- elementwise multiply
-- `down_proj`: returns to `hidden_size`
-
----
-
-## Running Gemma 4 Through `transformers`
-
-For multimodal Gemma 4, Hugging Face recommends loading a processor with the model:
+Gemma 4 is multimodal in Hugging Face, so the top-level load path often uses a processor:
 
 ```python
 from transformers import AutoModelForMultimodalLM, AutoProcessor
@@ -433,84 +867,54 @@ model = AutoModelForMultimodalLM.from_pretrained(
     dtype="auto",
     device_map="auto",
 )
-
-messages = [
-    {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": "Explain sliding-window attention in one sentence."},
-]
-
-inputs = processor.apply_chat_template(
-    messages,
-    tokenize=True,
-    return_dict=True,
-    return_tensors="pt",
-    add_generation_prompt=True,
-    enable_thinking=False,
-).to(model.device)
-
-input_len = inputs["input_ids"].shape[-1]
-outputs = model.generate(**inputs, max_new_tokens=80)
-response = processor.decode(outputs[0][input_len:], skip_special_tokens=False)
-print(response)
 ```
 
-For text-only inspection, the config is often enough:
+The text Transformer is usually inside a nested text config:
 
 ```python
 from transformers import AutoConfig
 
 cfg = AutoConfig.from_pretrained("google/gemma-4-E2B")
-text = cfg.text_config
+text_cfg = cfg.text_config
 
-print(text.hidden_size)
-print(text.num_hidden_layers)
-print(text.num_attention_heads, text.num_key_value_heads)
-print(text.sliding_window)
-print(text.layer_types)
+print(text_cfg.hidden_size)
+print(text_cfg.num_hidden_layers)
+print(text_cfg.num_attention_heads)
+print(text_cfg.num_key_value_heads)
+print(text_cfg.layer_types[:10])
+print(text_cfg.rope_parameters)
 ```
 
----
-
-## Llama 3 vs Gemma 4
-
-| Design choice | Llama 3 / Llama 3.2 | Gemma 4 E2B / E4B |
-|---|---|---|
-| Core architecture | Decoder-only causal LM | Decoder-only text decoder inside multimodal wrapper |
-| Attention pattern | Full causal attention in each layer | Mixture of sliding-window and full attention layers |
-| KV sharing | GQA | MQA/GQA plus optional cross-layer KV sharing |
-| Positional encoding | RoPE, with long-context scaling in Llama 3.2 | Separate local/global RoPE settings |
-| Normalization | Pre-Norm RMSNorm | RMSNorm before and after major sublayers |
-| FFN | SwiGLU with SiLU | Gated GELU |
-| Embeddings | Token embedding, sometimes tied in smaller Llama 3.2 | Token embedding plus Per-Layer Embeddings, tied output head |
-| Long-context strategy | RoPE scaling plus GQA cache savings | Sliding/global attention, proportional RoPE, KV sharing |
-| HF API | `AutoModelForCausalLM`, `AutoTokenizer` | `AutoProcessor`, multimodal model classes, nested `text_config` |
-
-The common spine is still:
+For Gemma 4, loading may need more than a tokenizer:
 
 ```text
-tokens -> embeddings -> many residual attention/MLP blocks -> logits
+config.json
+model weights
+tokenizer files
+processor files
+image/audio preprocessing files
+chat template
 ```
 
-The differences are engineering choices around memory, context length, modalities, and training stability.
+That is the main practical difference from a text-only Llama checkpoint.
 
 ---
 
-## How to Read a New Transformer Config
+## A Good Reading Order for Any New Model
 
-When you see a new Hugging Face model, inspect it in this order:
+When you open a Hugging Face model repo, read it in this order:
 
-1. `model_type`: identifies the architecture family.
-2. `architectures`: tells you which model class is expected.
-3. `vocab_size`: tells you the tokenizer/output space.
-4. `hidden_size` and `num_hidden_layers`: width and depth.
-5. `num_attention_heads` and `num_key_value_heads`: MHA, MQA, or GQA.
-6. `intermediate_size` and `hidden_act`: FFN type and width.
-7. `max_position_embeddings`, `rope_theta`, and `rope_parameters`: context and position strategy.
-8. `sliding_window` or `layer_types`: whether attention is full, local, or hybrid.
-9. `tie_word_embeddings`: whether input and output embeddings are shared.
-10. model-specific fields such as Gemma 4's `hidden_size_per_layer_input` or `num_kv_shared_layers`.
+1. `config.json`: what architecture and shapes?
+2. `tokenizer_config.json` / `tokenizer.json`: what tokenization?
+3. `model.safetensors.index.json`: how are weights named and sharded?
+4. model class printout: what modules were instantiated?
+5. first block: what does one layer contain?
+6. attention module: MHA, MQA, GQA, sliding, or hybrid?
+7. MLP module: GELU, SwiGLU, MoE, or something else?
+8. generation config and chat template: how should prompts be formatted?
 
-This turns a large model from a mysterious object into a stack of familiar parts.
+For Llama, this process reveals a clean decoder-only model.
+For Gemma 4, the same process reveals the same Transformer spine plus multimodal processing, hybrid attention, per-layer embeddings, and more normalization.
 
 ---
 
