@@ -16,6 +16,7 @@ parts:
       - file: transformers/normalization.md
       - file: transformers/feed_forward.md
       - file: transformers/positional_embedding.md
+      - file: transformers/real_world_architectures.md
       - file: transformers/summary.md
   - caption: Post-training
     chapters:
