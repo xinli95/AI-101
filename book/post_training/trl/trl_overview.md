@@ -1,4 +1,4 @@
-# TRL Examples
+# TRL Overview
 
 The TRL section collects practical, implementation-focused examples for post-training workflows. It complements the theory chapters with runnable code paths and highlights how to wire reward models, optimizers, and data for real training loops.
 
@@ -10,7 +10,7 @@ In this subsection you will find:
 - **Multi-task reward training with GRPO** — mixing multiple tasks and reward functions in one run.
 - **Agentic RL with GRPO** using TRL as an end-to-end example, with tool-calling, multi-turn rollouts, and reward design for agent behavior.
 
-## TRL trainer family: source-code map for post-training
+## Source-code map for post-training
 
 The theory chapters explain *what* SFT, reward modeling, DPO, GRPO, and distillation optimize. TRL's trainer directory shows *where those objectives live in code*. As of 2026-08-14, the main trainer source tree is:
 
@@ -37,7 +37,7 @@ algorithm idea
 
 So when reading any TRL trainer, do not start from every utility function. Start with the config fields, then follow the batch from dataset columns into the collator, then into `compute_loss`.
 
-### 1. The trainer taxonomy
+## 1. The trainer taxonomy
 
 | Trainer | Post-training role | Offline or online? | Dataset shape | Extra models | Core objective |
 | --- | --- | --- | --- | --- | --- |
@@ -53,7 +53,7 @@ So when reading any TRL trainer, do not start from every utility function. Start
 `PPOTrainer` is still important conceptually, and this book has a dedicated PPO deep dive. In recent TRL layouts, however, the legacy PPO implementation is outside the main `trl/trainer` directory, under an experimental PPO path. That is why the table above focuses on the trainers exported from `trl/trainer/__init__.py`.
 ```
 
-### 2. Shared skeleton: what every trainer inherits
+## 2. Shared skeleton: what every trainer inherits
 
 Most TRL trainers are specialized versions of Hugging Face `Trainer`, not completely separate training engines.
 
@@ -66,7 +66,7 @@ Most TRL trainers are specialized versions of Hugging Face `Trainer`, not comple
 
 This is the first design principle: **TRL leaves generic training mechanics to `transformers.Trainer`, and each trainer mostly changes data preparation plus loss computation.**
 
-### 3. `SFTTrainer`: supervised imitation as masked language modeling
+## 3. `SFTTrainer`: supervised imitation as masked language modeling
 
 Required source files:
 
@@ -93,7 +93,7 @@ raw instruction example
 
 SFT is therefore the cleanest trainer to read first. It teaches the core TRL pattern: dataset normalization, masking, then `Trainer`-style loss.
 
-### 4. `RewardTrainer`: learning the scalar judge
+## 4. `RewardTrainer`: learning the scalar judge
 
 Required source files:
 
@@ -117,7 +117,7 @@ Connection to RLHF:
 
 `RewardTrainer` trains the reward model used by classic PPO-style RLHF. It is not needed for DPO, where the policy/reference log-ratio creates an implicit reward, and it is often replaced by verifiers or callable reward functions in GRPO/RLVR.
 
-### 5. `DPOTrainer`: offline preference optimization
+## 5. `DPOTrainer`: offline preference optimization
 
 Required source files:
 
@@ -144,7 +144,7 @@ reference chosen logp  reference rejected logp
 
 The important code-level distinction from PPO/GRPO: **`DPOTrainer` does not sample completions during training**. It is offline and teacher-forced, like SFT, but the loss is pairwise and reference-regularized.
 
-### 6. `KTOTrainer`: unpaired preference data
+## 6. `KTOTrainer`: unpaired preference data
 
 Required source files:
 
@@ -162,7 +162,7 @@ Design principle:
 
 KTO exists for data regimes where you have thumbs-up/thumbs-down examples rather than clean pairwise comparisons for the same prompt. It still needs a reference policy because the method is about moving desirable examples up and undesirable examples down while controlling drift from the starting model.
 
-### 7. `RLOOTrainer`: online RL without a critic
+## 7. `RLOOTrainer`: online RL without a critic
 
 Required source files:
 
@@ -182,7 +182,7 @@ Connection to GRPO:
 
 RLOO and GRPO are siblings. Both remove PPO's learned value model. RLOO uses a leave-one-out baseline; GRPO uses group-relative normalization. If PPO is "actor plus critic", these trainers are "actor plus sampled peer baseline".
 
-### 8. `GRPOTrainer`: group-relative online RL
+## 8. `GRPOTrainer`: group-relative online RL
 
 Required source files:
 
@@ -214,7 +214,7 @@ one prompt
 
 The key design choice is that GRPO replaces PPO's critic with **within-prompt comparison**. This makes the trainer easier to scale for RLVR, but also makes group construction, reward variance, completion length, truncation masks, and rollout freshness much more important.
 
-### 9. `DistillationTrainer`: on-policy teacher matching
+## 9. `DistillationTrainer`: on-policy teacher matching
 
 Required source files:
 
@@ -240,7 +240,7 @@ student minimizes divergence to teacher distribution on generated completion tok
 
 This is different from SFT-style distillation on teacher-written answers. The student is trained on its own mistakes, and the teacher supplies the distributional correction.
 
-### 10. How to choose the right trainer
+## 10. How to choose the right trainer
 
 | If you have... | Use... | Reason |
 | --- | --- | --- |
@@ -252,7 +252,7 @@ This is different from SFT-style distillation on teacher-written answers. The st
 | Prompt-only tasks with multiple samples and a leave-one-out baseline | `RLOOTrainer` | A critic-free online RL alternative close in spirit to GRPO. |
 | A larger teacher model and a smaller student | `DistillationTrainer` | Matches the teacher's soft distribution on student-generated completions. |
 
-### 11. A practical reading order
+## 11. A practical reading order
 
 If you are connecting this source tree back to the earlier theory chapters, read in this order:
 
