@@ -61,6 +61,10 @@ parts:
           - file: evaluation/olmo3/olmes/olmo3_base_code.md
           - file: evaluation/olmo3/olmes/olmo3_base_code_fim.md
           - file: evaluation/olmo3/olmes/olmo3_adapt.md
+  - caption: AI Vertical
+    chapters:
+      - file: ai_vertical/overview.md
+      - file: ai_vertical/contact_center.md
   - caption: Responsible AI
     chapters:
       - file: responsible_ai/overview.md
