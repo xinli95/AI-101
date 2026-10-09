@@ -37,7 +37,7 @@ Source: Lin Qiao, [*When (and How) to Post-Train Your Own AI Models* — officia
 
 For example, a support assistant might retrieve the latest product policy with RAG, learn a consistent escalation response through SFT, and learn the team's preferred tone through DPO. RL becomes relevant if it can practice support workflows in an environment with a trustworthy success signal. A teacher can then provide training data for a cheaper student, whose quality must be checked again.
 
-Start with a prompting baseline and a representative [evaluation set](../evaluation/overview.md). Inspect failures, choose the method that addresses the observed gap, and compare quality, latency, and cost on held-out cases after each change. There is no need to use every method.
+Start with a prompting baseline and a representative evaluation set. Inspect failures, choose the method that addresses the observed gap, and compare quality, latency, and cost on held-out cases after each change. There is no need to use every method.
 
 ## Where to go next
 

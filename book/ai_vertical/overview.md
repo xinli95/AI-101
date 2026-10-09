@@ -20,4 +20,4 @@ Speaker insights are attributed to their sources. Additional examples and design
 
 - **[Contact Center: From Automation to Customer Experience](contact_center.md):** insights from Cresta CEO Ping Wu, followed by questions for applying them to a service workflow.
 
-For the underlying methods, see [Post-training Overview](../post_training/overview.md). For measuring outcomes, see [Evaluation Overview](../evaluation/overview.md).
+For the underlying methods, see [Post-training Overview](../post_training/overview.md).

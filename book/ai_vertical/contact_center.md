@@ -38,4 +38,4 @@ These are proposed review questions for this case study:
 - Are improvements preserved across languages and uncommon cases?
 - What happens to resolution quality when latency or serving cost is reduced?
 
-Use representative held-out cases to assess these questions alongside cost and response time. See [Evaluation Overview](../evaluation/overview.md) for the broader evaluation framework.
+Use representative held-out cases to assess these questions alongside cost and response time.
